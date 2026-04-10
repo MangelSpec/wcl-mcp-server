@@ -1,0 +1,19 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+.DS_Store
+references/
+
+# Raid combat logs (hundreds of MB each, belong on disk not in git)
+WoWCombatLog-*.txt
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Windows thumbnail cache
+Thumbs.db
+
+# Claude Code project-local state
+.claude/
