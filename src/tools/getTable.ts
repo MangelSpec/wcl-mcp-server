@@ -110,12 +110,9 @@ interface QueryResult {
 }
 
 export async function getTable(args: GetTableArgs): Promise<GetTableResult> {
+  // args.view is typed as TableView and the MCP boundary re-validates with
+  // requireEnum(TABLE_VIEWS), so the lookup is guaranteed to hit a value.
   const dataType = VIEW_TO_DATA_TYPE[args.view];
-  if (!dataType) {
-    throw new Error(
-      `Invalid view: "${args.view}". Must be one of: ${TABLE_VIEWS.join(", ")}`,
-    );
-  }
 
   const { startTime, endTime } = await resolveFightBounds(args.reportCode, args.fightID);
 

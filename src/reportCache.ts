@@ -6,12 +6,20 @@
  * All three share this cache so repeated calls against the same report
  * don't each cost a `fights` query.
  *
- * The cache is unbounded and lives for the lifetime of the MCP server
- * process. For a single-session stdio server this is fine. If we ever
- * run this as a long-lived shared service we'll want LRU eviction.
+ * Entries expire after CACHE_TTL_MS (default 60s). This is a deliberate
+ * compromise for live raid nights: reports are mutable while being logged
+ * (new pulls get appended), so an indefinitely-cached fights list would
+ * cause resolveFightBounds to reject freshly-uploaded fight IDs with a
+ * misleading "not found" error. A short TTL keeps the savings for busy
+ * query bursts while letting new fights surface on the next minute.
+ *
+ * The cache is unbounded in size; for a single-session stdio server that
+ * only ever looks at a handful of reports, this is fine.
  */
 
 import { executeAndUnwrap } from "./client.js";
+
+const CACHE_TTL_MS = 60_000;
 
 export interface Fight {
   id: number;
@@ -37,7 +45,13 @@ export interface CachedReport {
   fights: Fight[];
 }
 
-const cache = new Map<string, CachedReport>();
+interface CacheEntry {
+  value: CachedReport;
+  /** epoch ms at which this entry becomes stale */
+  expiresAt: number;
+}
+
+const cache = new Map<string, CacheEntry>();
 /** Deduplicate concurrent fetches for the same report code. */
 const inflight = new Map<string, Promise<CachedReport>>();
 
@@ -83,8 +97,10 @@ interface QueryResult {
 }
 
 export async function getCachedReport(reportCode: string): Promise<CachedReport> {
+  const now = Date.now();
   const hit = cache.get(reportCode);
-  if (hit) return hit;
+  if (hit && hit.expiresAt > now) return hit.value;
+  if (hit) cache.delete(reportCode); // expired — evict so we don't grow unbounded
 
   const pending = inflight.get(reportCode);
   if (pending) return pending;
@@ -95,7 +111,7 @@ export async function getCachedReport(reportCode: string): Promise<CachedReport>
     if (!report) {
       throw new Error(`WCL report not found: ${reportCode}`);
     }
-    const entry: CachedReport = {
+    const value: CachedReport = {
       report: {
         code: report.code,
         title: report.title,
@@ -104,8 +120,8 @@ export async function getCachedReport(reportCode: string): Promise<CachedReport>
       },
       fights: report.fights,
     };
-    cache.set(reportCode, entry);
-    return entry;
+    cache.set(reportCode, { value, expiresAt: Date.now() + CACHE_TTL_MS });
+    return value;
   })();
 
   inflight.set(reportCode, promise);
@@ -126,10 +142,20 @@ export async function resolveFightBounds(
   if (!fight) {
     throw new Error(
       `Fight ${fightID} not found in report ${reportCode}. ` +
-        `Available fight IDs: ${fights.map((f) => f.id).join(", ") || "(none)"}`,
+        `Available fight IDs: ${formatFightIdList(fights)}`,
     );
   }
   return { startTime: fight.startTime, endTime: fight.endTime };
+}
+
+const MAX_FIGHT_IDS_IN_ERROR = 10;
+
+function formatFightIdList(fights: Fight[]): string {
+  if (fights.length === 0) return "(none)";
+  const ids = fights.map((f) => f.id);
+  if (ids.length <= MAX_FIGHT_IDS_IN_ERROR) return ids.join(", ");
+  const head = ids.slice(0, MAX_FIGHT_IDS_IN_ERROR).join(", ");
+  return `${head}, … (+${ids.length - MAX_FIGHT_IDS_IN_ERROR} more)`;
 }
 
 /** Test/debugging hook — drop a report from the cache, or clear all. */

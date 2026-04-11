@@ -34,6 +34,8 @@ let buffer = "";
 const pending = new Map();
 let nextId = 1;
 
+const REQUEST_TIMEOUT_MS = 60_000;
+
 child.stdout.setEncoding("utf8");
 child.stdout.on("data", (chunk) => {
   buffer += chunk;
@@ -50,19 +52,49 @@ child.stdout.on("data", (chunk) => {
       continue;
     }
     if (msg.id !== undefined && pending.has(msg.id)) {
-      const { resolve } = pending.get(msg.id);
+      const entry = pending.get(msg.id);
       pending.delete(msg.id);
-      resolve(msg);
+      clearTimeout(entry.timer);
+      entry.resolve(msg);
     } else {
       console.error("[unsolicited]", msg);
     }
   }
 });
 
+// If the child dies mid-request (crash, missing env, bad import), the pending
+// promise would hang forever without this. Reject everything in flight so the
+// smoke test exits loudly instead of wedging.
+child.on("exit", (code, signal) => {
+  if (pending.size === 0) return;
+  const reason = new Error(
+    `MCP server child process exited unexpectedly (code=${code}, signal=${signal}) with ${pending.size} request(s) in flight`,
+  );
+  for (const { reject, timer } of pending.values()) {
+    clearTimeout(timer);
+    reject(reason);
+  }
+  pending.clear();
+});
+
+child.on("error", (err) => {
+  const reason = new Error(`MCP server child process error: ${err.message}`);
+  for (const { reject, timer } of pending.values()) {
+    clearTimeout(timer);
+    reject(reason);
+  }
+  pending.clear();
+});
+
 function request(method, params) {
   const id = nextId++;
   return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject });
+    const timer = setTimeout(() => {
+      if (!pending.has(id)) return;
+      pending.delete(id);
+      reject(new Error(`Request ${id} (${method}) timed out after ${REQUEST_TIMEOUT_MS}ms`));
+    }, REQUEST_TIMEOUT_MS);
+    pending.set(id, { resolve, reject, timer });
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
   });
 }

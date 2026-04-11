@@ -106,7 +106,9 @@ export async function executeGraphQL<T = unknown>(
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(
-      `WCL GraphQL HTTP error: ${res.status} ${res.statusText}${text ? ` — ${text}` : ""}`,
+      `WCL GraphQL HTTP error: ${res.status} ${res.statusText}${
+        text ? ` — ${truncateUpstreamBody(text)}` : ""
+      }`,
     );
   }
 
@@ -123,6 +125,22 @@ export async function executeGraphQL<T = unknown>(
   }
 
   return body;
+}
+
+/**
+ * Truncate an upstream response body for inclusion in an error message.
+ * WCL (or a fronting CDN) can return many KB of HTML on 5xx/edge errors,
+ * which would otherwise bloat tool output and risk leaking internal hosts
+ * or stack traces. 500 chars is enough to show the useful first line of
+ * most JSON or HTML error payloads.
+ */
+const UPSTREAM_BODY_MAX_CHARS = 500;
+export function truncateUpstreamBody(text: string): string {
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  if (collapsed.length <= UPSTREAM_BODY_MAX_CHARS) return collapsed;
+  return `${collapsed.slice(0, UPSTREAM_BODY_MAX_CHARS)}… (+${
+    collapsed.length - UPSTREAM_BODY_MAX_CHARS
+  } chars truncated)`;
 }
 
 function isRateLimitData(value: unknown): value is RateLimitData {

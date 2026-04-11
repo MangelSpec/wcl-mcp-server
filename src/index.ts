@@ -20,6 +20,7 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 
+import { WclRateLimitError } from "./client.js";
 import { getRateLimit } from "./tools/getRateLimit.js";
 import { getFights } from "./tools/getFights.js";
 import { getPlayerInfo } from "./tools/getPlayerInfo.js";
@@ -339,6 +340,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return err(`Unknown tool: ${name}`);
     }
   } catch (e) {
+    // Surface WclRateLimitError with its structured rateLimit payload so
+    // callers can programmatically see reset timing instead of parsing a
+    // human-readable string.
+    if (e instanceof WclRateLimitError) {
+      return err(e.message, { kind: "rate_limit", rateLimit: e.rateLimit });
+    }
     return err(e instanceof Error ? e.message : String(e));
   }
 });
@@ -349,9 +356,15 @@ function ok(data: unknown) {
   };
 }
 
-function err(message: string) {
+function err(message: string, details?: Record<string, unknown>) {
+  // Default to the plaintext "Error: …" shape. When we have structured context
+  // (e.g. a rate-limit payload), emit JSON so callers can parse it alongside
+  // the message.
+  const text = details
+    ? JSON.stringify({ error: message, ...details }, null, 2)
+    : `Error: ${message}`;
   return {
-    content: [{ type: "text" as const, text: `Error: ${message}` }],
+    content: [{ type: "text" as const, text }],
     isError: true,
   };
 }
@@ -362,16 +375,16 @@ function err(message: string) {
 
 function requireString(args: Record<string, unknown>, key: string): string {
   const v = args[key];
-  if (typeof v !== "string" || v.length === 0) {
+  if (typeof v !== "string" || v.trim().length === 0) {
     throw new Error(`Argument "${key}" must be a non-empty string`);
   }
-  return v;
+  return v.trim();
 }
 
 function requireNumber(args: Record<string, unknown>, key: string): number {
   const v = args[key];
-  if (typeof v !== "number" || Number.isNaN(v)) {
-    throw new Error(`Argument "${key}" must be a number`);
+  if (typeof v !== "number" || !Number.isFinite(v)) {
+    throw new Error(`Argument "${key}" must be a finite number`);
   }
   return v;
 }
@@ -379,8 +392,8 @@ function requireNumber(args: Record<string, unknown>, key: string): number {
 function optionalNumber(args: Record<string, unknown>, key: string): number | undefined {
   const v = args[key];
   if (v === undefined || v === null) return undefined;
-  if (typeof v !== "number" || Number.isNaN(v)) {
-    throw new Error(`Argument "${key}" must be a number if provided`);
+  if (typeof v !== "number" || !Number.isFinite(v)) {
+    throw new Error(`Argument "${key}" must be a finite number if provided`);
   }
   return v;
 }
