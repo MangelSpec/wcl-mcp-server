@@ -24,6 +24,8 @@ import { getRateLimit } from "./tools/getRateLimit.js";
 import { getFights } from "./tools/getFights.js";
 import { getPlayerInfo } from "./tools/getPlayerInfo.js";
 import { getTable, TABLE_VIEWS } from "./tools/getTable.js";
+import { getEvents, EVENT_DATA_TYPES } from "./tools/getEvents.js";
+import { runGraphQL } from "./tools/graphql.js";
 
 const TOOLS: Tool[] = [
   {
@@ -75,9 +77,13 @@ const TOOLS: Tool[] = [
     description:
       "Fetch the player roster for a report: actor IDs (the internal WCL " +
       "integer used by events/tables), in-game GUIDs, names, servers, " +
-      "classes (type), and specs (subType). Also returns the log owner. " +
-      "Call this once per report to build a join key between WCL actor " +
-      "data and external systems that identify players by name or GUID.",
+      "classes (type field), specs (spec field, e.g. 'Destruction'), and " +
+      "role bucket ('dps' | 'healers' | 'tanks'). Also returns the log " +
+      "owner. Spec is resolved from report.playerDetails across the whole " +
+      "report window; if a player swapped spec mid-run we return the one " +
+      "they used most. Call this once per report to build a join key " +
+      "between WCL actor data and external systems that identify players " +
+      "by name or GUID.",
     inputSchema: {
       type: "object",
       properties: {
@@ -130,6 +136,103 @@ const TOOLS: Tool[] = [
         },
       },
       required: ["reportCode", "fightID", "view"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wcl_get_events",
+    description:
+      "Fetch raw combat log events for a fight with filtering. Events are " +
+      "returned as WCL's untyped JSON blobs (shape varies per dataType). " +
+      "Auto-paginates internally up to maxPages (default 3) to protect " +
+      "rate-limit budget. If the page cap is hit with more data remaining, " +
+      "the response has truncated:true and nextPageTimestamp — pass that " +
+      "value back as startTime on a follow-up call to continue. On " +
+      "natural drain, truncated:false and nextPageTimestamp is omitted. " +
+      "fightID is resolved to time bounds internally (same pattern as " +
+      "wcl_get_table).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reportCode: {
+          type: "string",
+          description: "The WCL report code.",
+        },
+        fightID: {
+          type: "number",
+          description: "The fight ID from wcl_get_fights.",
+        },
+        dataType: {
+          type: "string",
+          enum: [...EVENT_DATA_TYPES],
+          description:
+            "WCL EventDataType: DamageDone, DamageTaken, Healing, Casts, " +
+            "Buffs, Debuffs, Deaths, Dispels, Summons, Resources, Threat, " +
+            "Interrupts, CombatantInfo, or All.",
+        },
+        sourceID: {
+          type: "number",
+          description: "Optional: filter to a single source actor.",
+        },
+        targetID: {
+          type: "number",
+          description: "Optional: filter to a single target actor.",
+        },
+        abilityID: {
+          type: "number",
+          description: "Optional: filter to a single ability (game spell ID).",
+        },
+        limit: {
+          type: "number",
+          description: "Max events per page (default 10000).",
+        },
+        startTime: {
+          type: "number",
+          description:
+            "Override start time in relative ms. Defaults to fight start. " +
+            "Also used as the pagination cursor — pass the previous call's " +
+            "nextPageTimestamp here to continue a truncated query.",
+        },
+        endTime: {
+          type: "number",
+          description: "Override end time in relative ms. Defaults to fight end.",
+        },
+        maxPages: {
+          type: "number",
+          description:
+            "Max pages to auto-paginate through before signalling truncation. Default 3.",
+        },
+      },
+      required: ["reportCode", "fightID", "dataType"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wcl_graphql",
+    description:
+      "Raw GraphQL escape hatch — run an arbitrary query against the WCL " +
+      "V2 endpoint. Use this when the structured tools don't cover what " +
+      "you need, or for schema introspection. Returns the full GraphQL " +
+      "response body unchanged (including any `errors` array) so you can " +
+      "see exactly what WCL said. This tool does NOT auto-inject " +
+      "rateLimitData into your query — if you want visibility, add " +
+      "`rateLimitData { limitPerHour pointsSpentThisHour pointsResetIn }` " +
+      "at the root of your own query, or call wcl_get_rate_limit " +
+      "separately.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "A GraphQL query string.",
+        },
+        variables: {
+          type: "object",
+          description: "Optional GraphQL variables object.",
+          additionalProperties: true,
+        },
+      },
+      required: ["query"],
       additionalProperties: false,
     },
   },
@@ -199,6 +302,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return ok(data);
       }
 
+      case "wcl_get_events": {
+        const reportCode = requireString(args, "reportCode");
+        const fightID = requireNumber(args, "fightID");
+        const dataType = requireEnum(args, "dataType", EVENT_DATA_TYPES);
+        const sourceID = optionalNumber(args, "sourceID");
+        const targetID = optionalNumber(args, "targetID");
+        const abilityID = optionalNumber(args, "abilityID");
+        const limit = optionalNumber(args, "limit");
+        const startTime = optionalNumber(args, "startTime");
+        const endTime = optionalNumber(args, "endTime");
+        const maxPages = optionalNumber(args, "maxPages");
+        const data = await getEvents({
+          reportCode,
+          fightID,
+          dataType,
+          sourceID,
+          targetID,
+          abilityID,
+          limit,
+          startTime,
+          endTime,
+          maxPages,
+        });
+        return ok(data);
+      }
+
+      case "wcl_graphql": {
+        const query = requireString(args, "query");
+        const variables = optionalObject(args, "variables");
+        const data = await runGraphQL({ query, variables });
+        return ok(data);
+      }
+
       default:
         return err(`Unknown tool: ${name}`);
     }
@@ -261,6 +397,18 @@ function requireEnum<T extends string>(
     );
   }
   return v as T;
+}
+
+function optionalObject(
+  args: Record<string, unknown>,
+  key: string,
+): Record<string, unknown> | undefined {
+  const v = args[key];
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "object" || Array.isArray(v)) {
+    throw new Error(`Argument "${key}" must be an object if provided`);
+  }
+  return v as Record<string, unknown>;
 }
 
 function optionalEnum<T extends string>(

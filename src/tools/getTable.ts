@@ -20,10 +20,16 @@ import { resolveFightBounds } from "../reportCache.js";
 /**
  * Mapping from friendly view slug → WCL's `TableDataType` enum value.
  *
- * Values verified against https://www.warcraftlogs.com/v2-api-docs/warcraft/
- * for the ones we're confident about. `ResourceGains` is a best guess at the
- * time of writing — if it breaks we'll see the error message from WCL and
- * fix it.
+ * Verified against live introspection of the WCL schema (see the
+ * scripts/smoke-test.mjs introspection step — it re-verifies this on
+ * every run). As of verification, WCL's TableDataType enum values are:
+ *   Summary, Buffs, Casts, DamageDone, DamageTaken, Deaths, Debuffs,
+ *   Dispels, Healing, Interrupts, Resources, Summons, Survivability, Threat
+ *
+ * The WCL website URL slug `resources-gains` has no distinct TableDataType
+ * — `Resources` alone is what you want. We drop `resources-gains` rather
+ * than guess a synonym. If you need resource gains specifically, use
+ * wcl_get_events with `dataType: Resources` instead.
  */
 const VIEW_TO_DATA_TYPE = {
   "damage-done": "DamageDone",
@@ -35,8 +41,11 @@ const VIEW_TO_DATA_TYPE = {
   deaths: "Deaths",
   survivability: "Survivability",
   resources: "Resources",
-  "resources-gains": "ResourceGains",
   summons: "Summons",
+  dispels: "Dispels",
+  interrupts: "Interrupts",
+  threat: "Threat",
+  summary: "Summary",
 } as const satisfies Record<string, string>;
 
 export type TableView = keyof typeof VIEW_TO_DATA_TYPE;
