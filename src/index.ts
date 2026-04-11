@@ -11,7 +11,18 @@
  * so agents can reason about them.
  */
 
-import "dotenv/config";
+// Resolve .env relative to this script's own location, not the subprocess cwd.
+// MCP clients typically launch tool servers with the *client's* cwd (the user's
+// project directory), not the server's install path — so a bare `dotenv/config`
+// would silently fail to find .env and every tool call would error out with
+// "Missing WCL_CLIENT_ID…". Anchoring to __dirname makes .env discovery robust
+// regardless of how the server was launched.
+import { config as dotenvConfig } from "dotenv";
+import { fileURLToPath } from "url";
+import { dirname, resolve as pathResolve } from "path";
+const __dirname = dirname(fileURLToPath(import.meta.url));
+dotenvConfig({ path: pathResolve(__dirname, "../.env") });
+
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {

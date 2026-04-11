@@ -49,20 +49,22 @@ Add an entry to your MCP client config (e.g. `claude_desktop_config.json` or the
   "mcpServers": {
     "wcl": {
       "command": "node",
-      "args": ["C:\\Users\\adria\\_dev\\wcl-mcp-server\\dist\\index.js"]
+      "args": ["<absolute-path-to-wcl-mcp-server>/dist/index.js"]
     }
   }
 }
 ```
 
-Credentials are read from the [.env](.env) file at repo root via `dotenv`, so you do **not** need to pass them through the MCP client's `env` block. If you'd rather inject them explicitly, you can:
+Replace `<absolute-path-to-wcl-mcp-server>` with wherever you cloned this repo. On Windows, escape backslashes (e.g. `C:\\path\\to\\wcl-mcp-server\\dist\\index.js`).
+
+Credentials are read from the [.env](.env) file at repo root via `dotenv`, which is resolved relative to the compiled script's own location (see [src/index.ts](src/index.ts)) — so `.env` is found regardless of the client's working directory, and you do **not** need to set `cwd` or pass vars through the MCP client's `env` block. If you'd rather inject them explicitly, you can:
 
 ```json
 {
   "mcpServers": {
     "wcl": {
       "command": "node",
-      "args": ["C:\\Users\\adria\\_dev\\wcl-mcp-server\\dist\\index.js"],
+      "args": ["<absolute-path-to-wcl-mcp-server>/dist/index.js"],
       "env": {
         "WCL_CLIENT_ID": "…",
         "WCL_CLIENT_SECRET": "…"
@@ -143,7 +145,7 @@ Useful as a pre-push sanity check. It also introspects WCL's schema for `EventDa
 
 ## Troubleshooting
 
-- **"Missing WCL_CLIENT_ID and/or WCL_CLIENT_SECRET"** — `.env` not found or empty. Confirm it lives at the repo root (not in `dist/`) and the MCP client's working directory is the repo root, or pass the vars via the client config's `env` block.
+- **"Missing WCL_CLIENT_ID and/or WCL_CLIENT_SECRET"** — `.env` not found or empty. Confirm it lives at the repo root (not in `dist/`) and that `WCL_CLIENT_ID` / `WCL_CLIENT_SECRET` are both set inside it. `.env` is resolved relative to the compiled script's own location, so cwd shouldn't matter — if it's still not being picked up, verify you ran `npm run build` after creating `.env` (unlikely to be related, but rules out build-cache staleness), or pass the vars explicitly via the MCP client's `env` block.
 - **OAuth 401 / "token request failed"** — credentials wrong, or you created a *public* client instead of a *confidential* one. Re-create at https://www.warcraftlogs.com/api/clients/.
 - **Tool returns `isError: true` with `"kind": "rate_limit"`** — wait for `rateLimit.pointsResetIn` seconds before retrying. Don't loop on 429s.
 - **"report not found" / GraphQL errors** — the `reportCode` is wrong, private, or the report has been deleted. Try the same code on the WCL website to confirm.
