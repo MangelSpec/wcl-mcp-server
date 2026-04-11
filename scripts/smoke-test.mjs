@@ -14,7 +14,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 import { config } from "dotenv";
 
@@ -159,9 +159,14 @@ try {
   console.error(`EventDataType values (${eventEnum.length}): ${eventEnum.join(", ")}`);
   console.error(`TableDataType values (${tableEnum.length}): ${tableEnum.join(", ")}`);
 
-  // Compare against what getEvents.ts and getTable.ts expect.
+  // Compare against what getEvents.ts and getTable.ts expect. Both modules
+  // are imported from dist/ so the test is checking the actual source-of-
+  // truth constants, not a hand-copied duplicate — drift can't hide.
   const { EVENT_DATA_TYPES } = await import(
-    "file://" + path.join(repoRoot, "dist", "tools", "getEvents.js").replace(/\\/g, "/")
+    pathToFileURL(path.join(repoRoot, "dist", "tools", "getEvents.js")).href,
+  );
+  const { VIEW_TO_DATA_TYPE } = await import(
+    pathToFileURL(path.join(repoRoot, "dist", "tools", "getTable.js")).href,
   );
   const missingFromEventEnum = EVENT_DATA_TYPES.filter((v) => !eventEnum.includes(v));
   if (missingFromEventEnum.length > 0) {
@@ -170,24 +175,6 @@ try {
     );
   }
 
-  // Hardcoded mirror of getTable.ts's mapping so we can check it here too.
-  // Keep in sync with src/tools/getTable.ts VIEW_TO_DATA_TYPE.
-  const VIEW_TO_DATA_TYPE = {
-    "damage-done": "DamageDone",
-    healing: "Healing",
-    "damage-taken": "DamageTaken",
-    casts: "Casts",
-    buffs: "Buffs",
-    debuffs: "Debuffs",
-    deaths: "Deaths",
-    survivability: "Survivability",
-    resources: "Resources",
-    summons: "Summons",
-    dispels: "Dispels",
-    interrupts: "Interrupts",
-    threat: "Threat",
-    summary: "Summary",
-  };
   const tableMismatches = Object.entries(VIEW_TO_DATA_TYPE).filter(
     ([, dt]) => !tableEnum.includes(dt),
   );

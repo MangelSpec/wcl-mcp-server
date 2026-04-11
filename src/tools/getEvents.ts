@@ -162,7 +162,7 @@ export async function getEvents(args: GetEventsArgs): Promise<GetEventsResult> {
   let pagesReturned = 0;
   let nextPageTimestamp: number | null = null;
 
-  for (let page = 0; page < maxPages; page++) {
+  for (let i = 0; i < maxPages; i++) {
     const variables: Record<string, unknown> = {
       code: args.reportCode,
       startTime: cursor,
@@ -199,8 +199,19 @@ export async function getEvents(args: GetEventsArgs): Promise<GetEventsResult> {
     nextPageTimestamp = events.nextPageTimestamp;
     if (nextPageTimestamp == null) break;
 
-    // Guard against a pathological cursor that doesn't advance — would loop forever.
+    // Guard against a pathological cursor that doesn't advance. If we
+    // surfaced this as truncated:true with the non-advancing cursor, the
+    // caller would loop forever — calling again with the same startTime
+    // would land in the same state. Treat it as drained instead and log
+    // to stderr so the smoke test surfaces the drift.
     if (nextPageTimestamp <= cursor) {
+      console.error(
+        `wcl_get_events: WCL returned non-advancing nextPageTimestamp ` +
+          `(${nextPageTimestamp} <= cursor ${cursor}) on page ${pagesReturned} ` +
+          `for report=${args.reportCode} fight=${args.fightID} dataType=${args.dataType}. ` +
+          `Treating as drained to avoid a caller retry loop.`,
+      );
+      nextPageTimestamp = null;
       break;
     }
     cursor = nextPageTimestamp;

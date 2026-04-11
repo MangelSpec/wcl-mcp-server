@@ -10,9 +10,16 @@
  *   `masterData.actors` gives us actor kind + class name but NOT spec.
  *   `report.playerDetails(startTime, endTime)` returns a JSON blob that
  *   *does* include spec info per player — but it's role-keyed
- *   (dps/healers/tanks) and gated on a time window. We query it across
- *   the report's full [startTime=0, endTime=report.endTime - report.startTime]
- *   window so players who only appeared in a single fight still show up.
+ *   (dps/healers/tanks) and gated on a time window.
+ *
+ *   The correct window would be [0, report.endTime - report.startTime],
+ *   but pulling that cleanly requires a second round-trip (GraphQL
+ *   variables can't reference sibling fields of the same query). Instead
+ *   we pass an effectively-infinite upper bound via PLAYER_DETAILS_WINDOW_END
+ *   — WCL accepts and clamps it silently. If WCL ever starts strictly
+ *   validating endTime <= report.endTime, the smoke test will catch it
+ *   (the "with spec resolved: N/M" line will drop to zero) and we can
+ *   switch to a two-call approach. See references/wcl-mcp-server-post-mortem.md.
  *
  *   The playerDetails blob is merged into masterData.actors by matching
  *   on gameID (the in-game GUID, stable across all roles). If a player
@@ -22,12 +29,17 @@
 
 import { executeAndUnwrap } from "../client.js";
 
+/**
+ * Effectively-infinite upper bound for the playerDetails time window.
+ * ~115 days in relative ms, longer than any raid log will ever be.
+ * WCL accepts anything past the real report end and clamps internally.
+ */
+const PLAYER_DETAILS_WINDOW_END = 9_999_999_999;
+
 const QUERY = /* GraphQL */ `
-  query ($code: String!) {
+  query ($code: String!, $windowEnd: Float!) {
     reportData {
       report(code: $code) {
-        startTime
-        endTime
         owner {
           name
         }
@@ -41,7 +53,7 @@ const QUERY = /* GraphQL */ `
             subType
           }
         }
-        playerDetails(startTime: 0, endTime: 9999999999)
+        playerDetails(startTime: 0, endTime: $windowEnd)
       }
     }
     rateLimitData {
@@ -90,8 +102,6 @@ interface MasterDataActor {
 interface QueryResult {
   reportData: {
     report: {
-      startTime: number;
-      endTime: number;
       owner: { name: string } | null;
       masterData: { actors: MasterDataActor[] } | null;
       playerDetails: unknown;
@@ -119,7 +129,10 @@ type RoleBucket = "dps" | "healers" | "tanks";
 const ROLE_BUCKETS: readonly RoleBucket[] = ["dps", "healers", "tanks"];
 
 export async function getPlayerInfo(reportCode: string): Promise<GetPlayerInfoResult> {
-  const data = await executeAndUnwrap<QueryResult>(QUERY, { code: reportCode });
+  const data = await executeAndUnwrap<QueryResult>(QUERY, {
+    code: reportCode,
+    windowEnd: PLAYER_DETAILS_WINDOW_END,
+  });
   const report = data.reportData.report;
   if (!report) {
     throw new Error(`WCL report not found: ${reportCode}`);
@@ -164,7 +177,7 @@ interface SpecMap {
 }
 
 function buildSpecMap(playerDetails: unknown): SpecMap {
-  const empty: SpecMap = {
+  const map: SpecMap = {
     byGuid: new Map(),
     byId: new Map(),
     byName: new Map(),
@@ -173,7 +186,7 @@ function buildSpecMap(playerDetails: unknown): SpecMap {
   // WCL returns playerDetails as { data: { playerDetails: { dps, healers, tanks } } }
   // but the outer `data` wrapper is sometimes absent depending on the query path.
   // Defensively unwrap both shapes.
-  if (!playerDetails || typeof playerDetails !== "object") return empty;
+  if (!playerDetails || typeof playerDetails !== "object") return map;
   const outer = playerDetails as Record<string, unknown>;
   let inner: Record<string, unknown> | undefined;
 
@@ -185,7 +198,7 @@ function buildSpecMap(playerDetails: unknown): SpecMap {
       inner = d.playerDetails as Record<string, unknown>;
     }
   }
-  if (!inner) return empty;
+  if (!inner) return map;
 
   for (const role of ROLE_BUCKETS) {
     const list = inner[role];
@@ -196,12 +209,12 @@ function buildSpecMap(playerDetails: unknown): SpecMap {
       const spec = pickCanonicalSpec(entry.specs);
       if (!spec) continue;
       const match: SpecMatch = { spec, role };
-      if (typeof entry.guid === "number") empty.byGuid.set(entry.guid, match);
-      if (typeof entry.id === "number") empty.byId.set(entry.id, match);
-      if (typeof entry.name === "string") empty.byName.set(entry.name, match);
+      if (typeof entry.guid === "number") map.byGuid.set(entry.guid, match);
+      if (typeof entry.id === "number") map.byId.set(entry.id, match);
+      if (typeof entry.name === "string") map.byName.set(entry.name, match);
     }
   }
-  return empty;
+  return map;
 }
 
 /** Pick the spec with the highest `count` (most time played). Falls back to the first. */

@@ -31,7 +31,7 @@ import { resolveFightBounds } from "../reportCache.js";
  * than guess a synonym. If you need resource gains specifically, use
  * wcl_get_events with `dataType: Resources` instead.
  */
-const VIEW_TO_DATA_TYPE = {
+export const VIEW_TO_DATA_TYPE = {
   "damage-done": "DamageDone",
   healing: "Healing",
   "damage-taken": "DamageTaken",
