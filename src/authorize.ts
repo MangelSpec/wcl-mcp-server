@@ -13,8 +13,11 @@
  * anything it printed to stdout would corrupt the JSON-RPC stream.
  *
  * Flags:
- *   --status   print where the token lives and whether one is stored
- *   --logout   delete the stored token (server reverts to public-only mode)
+ *   --status       print where the token lives and whether one is stored
+ *   --logout       delete the stored token (server reverts to public-only mode)
+ *   --no-browser   print the URL and wait, don't try to launch a browser
+ *                  (headless boxes, SSH sessions, or when you want to paste the
+ *                  URL into a specific browser profile)
  */
 
 // Same .env anchoring rationale as index.ts: resolve relative to this script's
@@ -72,13 +75,18 @@ async function main(): Promise<void> {
   authorizeUrl.searchParams.set("response_type", "code");
   authorizeUrl.searchParams.set("state", state);
 
+  const noBrowser = args.includes("--no-browser");
   console.log("Warcraft Logs — authorizing this MCP server against your account.\n");
   console.log(`Listening for the callback on ${redirectUri}`);
-  console.log("Opening your browser. If it doesn't open, paste this URL yourself:\n");
+  console.log(
+    noBrowser
+      ? "Open this URL to authorize:\n"
+      : "Opening your browser. If it doesn't open, paste this URL yourself:\n",
+  );
   console.log(`  ${authorizeUrl.toString()}\n`);
 
   const code = await waitForAuthorizationCode(callback, state, () => {
-    openBrowser(authorizeUrl.toString());
+    if (!noBrowser) openBrowser(authorizeUrl.toString());
   });
 
   console.log("Got the authorization code. Exchanging it for a token…");
@@ -111,7 +119,11 @@ async function main(): Promise<void> {
     console.log("\nToken saved, but the identity check came back empty — try a tool call to confirm.");
   }
   console.log("The MCP server will now use /api/v2/user and can read your private reports.");
-  console.log("Restart your MCP client (or just make a new tool call) to pick it up.");
+  // An already-running server holds its resolved token in memory until that
+  // token expires — which is roughly a year — so it will not notice this file
+  // appearing. Restarting is the only thing that picks it up promptly.
+  console.log("Restart your MCP client to pick this up: a server that's already running keeps");
+  console.log("its current token until expiry and won't see this one.");
 }
 
 function printStatus(): void {
@@ -182,13 +194,23 @@ function waitForAuthorizationCode(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      // close() only stops new connections — it waits for existing ones to end,
+      // and browsers hold keep-alive sockets open (plus speculative ones for
+      // /favicon.ico) long after we've replied. Without this the script sits
+      // there until Node's 5s keep-alive timeout reaps them.
+      //
+      // Idle, not All: the socket we just answered on is left to finish
+      // gracefully under the `Connection: close` header, so there's no chance
+      // of truncating the page mid-flight. Only the speculative sockets — the
+      // ones actually holding close() open — get destroyed.
+      server.closeIdleConnections?.();
       server.close(() => fn());
     };
 
     const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       const url = new URL(req.url ?? "/", `http://${target.hostname}:${target.port}`);
       if (url.pathname !== target.pathname) {
-        res.writeHead(404, { "Content-Type": "text/plain" });
+        res.writeHead(404, { "Content-Type": "text/plain", Connection: "close" });
         res.end("Not found");
         return;
       }
@@ -196,9 +218,9 @@ function waitForAuthorizationCode(
       const error = url.searchParams.get("error");
       if (error) {
         const description = url.searchParams.get("error_description") ?? "";
-        respondHtml(res, 400, "Authorization denied", `${error}${description ? ` — ${description}` : ""}`);
-        finish(() =>
-          reject(new Error(`Warcraft Logs denied authorization: ${error}${description ? ` — ${description}` : ""}`)),
+        const detail = `${error}${description ? ` — ${description}` : ""}`;
+        respondHtml(res, 400, "Authorization denied", detail, () =>
+          finish(() => reject(new Error(`Warcraft Logs denied authorization: ${detail}`))),
         );
         return;
       }
@@ -206,20 +228,31 @@ function waitForAuthorizationCode(
       // CSRF guard: only accept a callback carrying the state we just minted.
       const state = url.searchParams.get("state");
       if (state !== expectedState) {
-        respondHtml(res, 400, "State mismatch", "This callback didn't come from the request we started. Nothing was saved.");
-        finish(() => reject(new Error("OAuth state mismatch — aborting without saving a token.")));
+        respondHtml(
+          res,
+          400,
+          "State mismatch",
+          "This callback didn't come from the request we started. Nothing was saved.",
+          () => finish(() => reject(new Error("OAuth state mismatch — aborting without saving a token."))),
+        );
         return;
       }
 
       const code = url.searchParams.get("code");
       if (!code) {
-        respondHtml(res, 400, "Missing code", "Warcraft Logs redirected back without an authorization code.");
-        finish(() => reject(new Error("Callback did not include an authorization code.")));
+        respondHtml(
+          res,
+          400,
+          "Missing code",
+          "Warcraft Logs redirected back without an authorization code.",
+          () => finish(() => reject(new Error("Callback did not include an authorization code."))),
+        );
         return;
       }
 
-      respondHtml(res, 200, "Authorized", "You can close this tab and return to the terminal.");
-      finish(() => resolve(code));
+      respondHtml(res, 200, "Authorized", "You can close this tab and return to the terminal.", () =>
+        finish(() => resolve(code)),
+      );
     });
 
     const timer = setTimeout(() => {
@@ -245,13 +278,37 @@ function waitForAuthorizationCode(
   });
 }
 
-function respondHtml(res: ServerResponse, status: number, heading: string, detail: string): void {
-  res.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
+function respondHtml(
+  res: ServerResponse,
+  status: number,
+  heading: string,
+  detail: string,
+  onFlushed: () => void,
+): void {
+  res.writeHead(status, { "Content-Type": "text/html; charset=utf-8", Connection: "close" });
   res.end(
-    `<!doctype html><meta charset="utf-8"><title>${heading}</title>` +
+    `<!doctype html><meta charset="utf-8"><title>${escapeHtml(heading)}</title>` +
       `<body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;line-height:1.5">` +
-      `<h1 style="font-size:1.25rem">${heading}</h1><p>${detail}</p></body>`,
+      `<h1 style="font-size:1.25rem">${escapeHtml(heading)}</h1><p>${escapeHtml(detail)}</p></body>`,
+    // Tear the server down only once the bytes are on the wire, so the browser
+    // always renders a complete page.
+    onFlushed,
   );
+}
+
+/**
+ * `detail` can carry `error` / `error_description` straight off the callback
+ * query string. Anything that reaches this page is attacker-influenceable — the
+ * listener answers any request to the callback path during its window, not just
+ * WCL's redirect — so it gets escaped rather than interpolated raw.
+ */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 interface CurrentUser {
@@ -310,5 +367,12 @@ function openBrowser(url: string): void {
 
 main().catch((err: unknown) => {
   console.error(`\n${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
+  // Set the code and let the loop drain rather than process.exit(1). Exiting
+  // hard here aborts libuv handles that are still closing — the callback
+  // server's sockets, the detached browser process, an in-flight fetch — and on
+  // Windows that surfaces as `Assertion failed: !(handle->flags &
+  // UV_HANDLE_CLOSING)` instead of the error message we just printed. Every
+  // path that reaches here has already closed the server, so nothing keeps the
+  // process alive.
+  process.exitCode = 1;
 });

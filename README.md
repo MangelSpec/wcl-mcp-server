@@ -63,6 +63,8 @@ npm run auth:logout
 
 `auth:status` prints where the token lives, when it expires, and whether it can self-refresh. `auth:logout` deletes it, reverting the server to public-only client credentials.
 
+**Both `auth` and `auth:logout` require restarting your MCP client to take effect.** A running server resolves its token once and keeps it in memory until expiry — about a year — so it won't notice the token file appearing or disappearing underneath it.
+
 **Verifying which mode you're in:** call `wcl_get_rate_limit` — its `authMode` field is `"user"` or `"client"`.
 
 Notes and caveats:
@@ -72,6 +74,7 @@ Notes and caveats:
 - **Refresh is automatic.** If WCL issued a refresh token, [src/auth.ts](src/auth.ts) renews in the background and rewrites the file; a 401 also forces a refresh attempt before failing. If no refresh token was issued, you'll be told to re-run `npm run auth` when it eventually expires.
 - **Rate limit points are then billed against your user account** rather than the client.
 - **Client credentials remain the fallback.** Delete the token file (or never create it) and behavior is identical to before this feature existed.
+- **One token file, one writer.** If WCL rotates the refresh token and two server instances (say Claude Desktop and Claude Code) refresh at the same moment, the loser's copy is stale and you'll be told to re-run `npm run auth`. Renewal happens roughly annually, so this is unlikely rather than impossible — there's no file locking.
 
 ## Running the server
 

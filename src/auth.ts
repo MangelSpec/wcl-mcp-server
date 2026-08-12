@@ -120,8 +120,11 @@ export function getCachedAuthMode(): AuthMode | null {
 }
 
 async function resolveAuth(): Promise<CachedToken> {
-  // Re-read the file every time rather than caching the parse: it lets a fresh
-  // `npm run auth` take effect in a long-running server without a restart.
+  // Re-read the file on every *resolution* rather than caching the parse, so a
+  // re-authorized token is picked up without a restart. Note this only helps
+  // once the in-memory token actually needs resolving — after a 401, or at
+  // expiry. WCL tokens last about a year, so switching modes on a live server
+  // still effectively requires a restart; `npm run auth` says so explicitly.
   const stored = readStoredToken();
   if (stored) return resolveUserToken(stored);
   return resolveClientToken();
