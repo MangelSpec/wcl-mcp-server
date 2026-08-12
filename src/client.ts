@@ -1,7 +1,11 @@
 /**
  * GraphQL executor for the Warcraft Logs V2 API.
  *
- * - Injects the OAuth bearer token via auth.ts
+ * - Injects the OAuth bearer token via auth.ts, and routes to the endpoint that
+ *   matches the token's flow: `/api/v2/user` for a user (authorization-code)
+ *   token, `/api/v2/client` for client credentials. Sending a user token to the
+ *   client endpoint does not error — it just silently drops you back to
+ *   public-only visibility, so the pairing matters.
  * - 30s request timeout
  * - Parses `rateLimitData` out of any response that happens to include it
  *   and caches it in-process (advisory only — see dev doc)
@@ -9,9 +13,12 @@
  * - On 429, surfaces a structured WclRateLimitError with reset info
  */
 
-import { getAccessToken, invalidateToken } from "./auth.js";
+import { getAuth, invalidateToken, type AuthMode } from "./auth.js";
 
-const GRAPHQL_ENDPOINT = "https://www.warcraftlogs.com/api/v2/client";
+const GRAPHQL_ENDPOINTS: Record<AuthMode, string> = {
+  user: "https://www.warcraftlogs.com/api/v2/user",
+  client: "https://www.warcraftlogs.com/api/v2/client",
+};
 const REQUEST_TIMEOUT_MS = 30_000;
 
 export interface RateLimitData {
@@ -59,17 +66,18 @@ export async function executeGraphQL<T = unknown>(
   variables?: Record<string, unknown>,
   options: ExecuteOptions = {},
 ): Promise<GraphQLResponse<T>> {
-  const token = await getAccessToken();
+  const { accessToken, mode } = await getAuth();
+  const endpoint = GRAPHQL_ENDPOINTS[mode];
 
   const controller = new AbortController();
   const timeoutHandle = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   let res: Response;
   try {
-    res = await fetch(GRAPHQL_ENDPOINT, {
+    res = await fetch(endpoint, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
         Accept: "application/json",
       },
@@ -85,10 +93,23 @@ export async function executeGraphQL<T = unknown>(
     clearTimeout(timeoutHandle);
   }
 
-  // 401 — token rejected. Invalidate and retry once.
+  // 401 — token rejected. Invalidate and retry once. In user mode the retry
+  // also forces a refresh-token round trip, which is what recovers a token that
+  // WCL expired earlier than its stated `expires_in`.
   if (res.status === 401 && !options._retriedOn401) {
     invalidateToken();
     return executeGraphQL<T>(query, variables, { _retriedOn401: true });
+  }
+
+  // A 401 that survives the retry means the credential itself is bad, not stale.
+  if (res.status === 401) {
+    throw new Error(
+      mode === "user"
+        ? "WCL rejected your user token (HTTP 401) even after refreshing. " +
+          "Re-run `npm run auth` to re-authorize."
+        : "WCL rejected the client credentials (HTTP 401). Check WCL_CLIENT_ID / " +
+          "WCL_CLIENT_SECRET in .env.",
+    );
   }
 
   // 429 — rate limited. Try to surface the reset interval if we have one cached.

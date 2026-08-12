@@ -44,8 +44,11 @@ const TOOLS: Tool[] = [
     name: "wcl_get_rate_limit",
     description:
       "Check the current Warcraft Logs V2 API rate limit status. Returns " +
-      "limitPerHour, pointsSpentThisHour, and pointsResetIn (seconds). Cheap " +
-      "to call and useful before running expensive queries.",
+      "limitPerHour, pointsSpentThisHour, and pointsResetIn (seconds), plus " +
+      "authMode ('user' = private reports owned by the authorized account are " +
+      "readable, 'client' = public/unlisted reports only). Cheap to call and " +
+      "useful before running expensive queries, or to diagnose a report that " +
+      "resolves as not-found.",
     inputSchema: {
       type: "object",
       properties: {},
