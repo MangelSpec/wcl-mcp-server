@@ -51,7 +51,7 @@ export async function getFightOverview(args: GetFightOverviewArgs) {
     ),
     payloadStability: "undocumented-json" as const,
     caveats: [
-      "Scoreboards are compacted to top rows and top abilities.",
+      "Scoreboards contain aggregate totals for the top rows; use generic table tools only when ability-level breakdowns are required.",
       "Use wcl_get_fight_window_context for casts, aura state, and event timing around a mechanic.",
     ],
   };
@@ -100,14 +100,12 @@ function compactScoreboardRow(row: Record<string, unknown>) {
     "overheal",
     "totalRDPSTaken",
     "totalRDPSGiven",
-    "abilities",
-    "damageAbilities",
   ]);
 }
 
 function compactMechanicRow(row: Record<string, unknown>) {
   if ("killingBlow" in row || "deathWindow" in row) {
-    return copyFields(row, [
+    const output = copyFields(row, [
       "name",
       "id",
       "guid",
@@ -119,8 +117,25 @@ function compactMechanicRow(row: Record<string, unknown>) {
       "fight",
       "overkill",
       "killingBlow",
-      "events",
     ]);
+    output.events = Array.isArray(row.events)
+      ? row.events.slice(0, 3).map((event) => {
+          const record = objectValue(event);
+          return record
+            ? copyFields(record, [
+                "timestamp",
+                "fightRelativeTimestamp",
+                "type",
+                "sourceID",
+                "ability",
+                "amount",
+                "mitigated",
+                "overkill",
+              ])
+            : event;
+        })
+      : [];
+    return output;
   }
   return compactValue(row, 0);
 }
@@ -129,12 +144,6 @@ function copyFields(row: Record<string, unknown>, keys: string[]) {
   const output: Record<string, unknown> = {};
   for (const key of keys) {
     if (row[key] === undefined) continue;
-    if (key === "abilities" || key === "damageAbilities") {
-      output[key] = Array.isArray(row[key])
-        ? row[key].slice(0, 5).map((entry) => compactValue(entry, 2))
-        : [];
-      continue;
-    }
     output[key] = compactValue(row[key], 1);
   }
   return output;
