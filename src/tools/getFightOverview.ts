@@ -129,6 +129,12 @@ function copyFields(row: Record<string, unknown>, keys: string[]) {
   const output: Record<string, unknown> = {};
   for (const key of keys) {
     if (row[key] === undefined) continue;
+    if (key === "abilities" || key === "damageAbilities") {
+      output[key] = Array.isArray(row[key])
+        ? row[key].slice(0, 5).map((entry) => compactValue(entry, 2))
+        : [];
+      continue;
+    }
     output[key] = compactValue(row[key], 1);
   }
   return output;
