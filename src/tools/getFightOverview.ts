@@ -105,7 +105,7 @@ function compactScoreboardRow(row: Record<string, unknown>) {
 
 function compactMechanicRow(row: Record<string, unknown>) {
   if ("killingBlow" in row || "deathWindow" in row) {
-    const output = copyFields(row, [
+    return copyFields(row, [
       "name",
       "id",
       "guid",
@@ -118,24 +118,6 @@ function compactMechanicRow(row: Record<string, unknown>) {
       "overkill",
       "killingBlow",
     ]);
-    output.events = Array.isArray(row.events)
-      ? row.events.slice(0, 3).map((event) => {
-          const record = objectValue(event);
-          return record
-            ? copyFields(record, [
-                "timestamp",
-                "fightRelativeTimestamp",
-                "type",
-                "sourceID",
-                "ability",
-                "amount",
-                "mitigated",
-                "overkill",
-              ])
-            : event;
-        })
-      : [];
-    return output;
   }
   return compactValue(row, 0);
 }
