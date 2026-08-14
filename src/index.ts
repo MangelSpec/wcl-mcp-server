@@ -43,6 +43,11 @@ import {
   PEER_METRICS,
 } from "./tools/findPeerParses.js";
 import { getFightContext } from "./tools/getFightContext.js";
+import { getFightOverview } from "./tools/getFightOverview.js";
+import {
+  getFightWindowContext,
+  WINDOW_EVENT_TYPES,
+} from "./tools/getFightWindowContext.js";
 import { getPlayerFightSummary } from "./tools/getPlayerFightSummary.js";
 import { runGraphQL } from "./tools/graphql.js";
 
@@ -318,6 +323,57 @@ const TOOLS: Tool[] = [
     },
   },
   {
+    name: "wcl_get_fight_overview",
+    description:
+      "Eagerly fetch a compact fight evidence bundle in parallel: exact roster/composition plus top damage, healing, damage-taken, every death, interrupts, and dispels. Use immediately after resolving a fight instead of making separate generic table and player-info calls.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reportCode: { type: "string" },
+        fightID: { type: "number" },
+        topActors: { type: "number", default: 10 },
+      },
+      required: ["reportCode", "fightID"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wcl_get_fight_window_context",
+    description:
+      "Fetch 1-6 correlated event channels for one narrow fight-relative time window in a single WCL GraphQL request, joined to actor and ability names. Use for mechanic, aura, cast, interrupt, defensive, damage, healing, and death questions around an exact timestamp.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reportCode: { type: "string" },
+        fightID: { type: "number" },
+        startTime: {
+          type: "number",
+          description: "Window start in milliseconds from fight start.",
+        },
+        endTime: {
+          type: "number",
+          description: "Window end in milliseconds from fight start.",
+        },
+        dataTypes: {
+          type: "array",
+          items: { type: "string", enum: [...WINDOW_EVENT_TYPES] },
+          minItems: 1,
+          maxItems: 6,
+        },
+        focusAbilityName: {
+          type: "string",
+          description:
+            "Optional fuzzy token filter applied to Buffs and Debuffs after ability names are joined.",
+        },
+        sourceID: { type: "number" },
+        targetID: { type: "number" },
+        abilityID: { type: "number" },
+      },
+      required: ["reportCode", "fightID", "startTime", "endTime", "dataTypes"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "wcl_graphql",
     description:
       "Raw GraphQL escape hatch — run an arbitrary query against the WCL " +
@@ -496,6 +552,42 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return ok(data);
       }
 
+      case "wcl_get_fight_overview": {
+        const reportCode = requireString(args, "reportCode");
+        const fightID = requireNumber(args, "fightID");
+        const topActors = optionalNumber(args, "topActors");
+        const data = await getFightOverview({ reportCode, fightID, topActors });
+        return ok(data);
+      }
+
+      case "wcl_get_fight_window_context": {
+        const reportCode = requireString(args, "reportCode");
+        const fightID = requireNumber(args, "fightID");
+        const startTime = requireNumber(args, "startTime");
+        const endTime = requireNumber(args, "endTime");
+        const dataTypes = requireEnumArray(
+          args,
+          "dataTypes",
+          WINDOW_EVENT_TYPES,
+        );
+        const focusAbilityName = optionalString(args, "focusAbilityName");
+        const sourceID = optionalNumber(args, "sourceID");
+        const targetID = optionalNumber(args, "targetID");
+        const abilityID = optionalNumber(args, "abilityID");
+        const data = await getFightWindowContext({
+          reportCode,
+          fightID,
+          startTime,
+          endTime,
+          dataTypes,
+          focusAbilityName,
+          sourceID,
+          targetID,
+          abilityID,
+        });
+        return ok(data);
+      }
+
       case "wcl_get_player_fight_summary": {
         const reportCode = requireString(args, "reportCode");
         const fightID = requireNumber(args, "fightID");
@@ -616,6 +708,26 @@ function requireEnum<T extends string>(
     );
   }
   return v as T;
+}
+
+function requireEnumArray<T extends string>(
+  args: Record<string, unknown>,
+  key: string,
+  allowed: readonly T[],
+): T[] {
+  const value = args[key];
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`Argument "${key}" must be a non-empty array`);
+  }
+  const allowedValues = new Set<string>(allowed);
+  for (const entry of value) {
+    if (typeof entry !== "string" || !allowedValues.has(entry)) {
+      throw new Error(
+        `Argument "${key}" contains an unsupported value: ${JSON.stringify(entry)}`,
+      );
+    }
+  }
+  return value as T[];
 }
 
 function optionalObject(

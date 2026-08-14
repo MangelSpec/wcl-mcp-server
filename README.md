@@ -126,6 +126,14 @@ After editing the config, restart the MCP client. Then you should see the `wcl_*
 
 ## Tools (agent reference)
 
+For normal fight analysis, prefer this bounded sequence:
+
+1. `wcl_get_fights` to refresh and resolve the exact fight.
+2. `wcl_get_fight_overview` to fetch roster, scoreboards, deaths, interrupts, and dispels in parallel.
+3. `wcl_get_fight_window_context` only when a narrow mechanic window needs correlated aura, cast, interrupt, damage, healing, or death events.
+
+The lower-level table and event tools remain available as focused escape hatches.
+
 All tools return a single `text` content block whose body is a JSON string. On error, `isError: true` and the text is either `Error: <message>` or a JSON object with `error` + structured context (e.g. `rateLimit` on 429). **Validate inputs carefully — every tool re-checks its arguments server-side and will refuse malformed requests.**
 
 ### `wcl_get_rate_limit`

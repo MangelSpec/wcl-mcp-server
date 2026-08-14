@@ -29,7 +29,10 @@
  */
 
 import { executeAndUnwrap } from "../client.js";
-import { addFightRelativeTimes } from "../fightTime.js";
+import {
+  addFightRelativeTimes,
+  resolveFightRelativeWindow,
+} from "../fightTime.js";
 import { resolveFightBounds } from "../reportCache.js";
 
 /**
@@ -154,15 +157,17 @@ export async function getEvents(args: GetEventsArgs): Promise<GetEventsResult> {
   const fightStart = bounds.startTime;
   const fightEnd = bounds.endTime;
 
-  // Allow callers to override the window (needed for pagination continuation),
-  // but default to the resolved fight bounds.
-  const windowStart = args.startTime ?? fightStart;
-  const windowEnd = args.endTime ?? fightEnd;
+  const window = resolveFightRelativeWindow(
+    fightStart,
+    fightEnd,
+    args.startTime,
+    args.endTime,
+  );
 
   const limit = args.limit ?? DEFAULT_LIMIT;
 
   const allEvents: unknown[] = [];
-  let cursor = windowStart;
+  let cursor = window.reportRelativeStartTime;
   let pagesReturned = 0;
   let nextPageTimestamp: number | null = null;
 
@@ -170,7 +175,7 @@ export async function getEvents(args: GetEventsArgs): Promise<GetEventsResult> {
     const variables: Record<string, unknown> = {
       code: args.reportCode,
       startTime: cursor,
-      endTime: windowEnd,
+      endTime: window.reportRelativeEndTime,
       dataType: args.dataType,
       limit,
     };
@@ -231,8 +236,8 @@ export async function getEvents(args: GetEventsArgs): Promise<GetEventsResult> {
     reportCode: args.reportCode,
     fightID: args.fightID,
     dataType: args.dataType,
-    startTime: windowStart,
-    endTime: windowEnd,
+    startTime: window.startTime,
+    endTime: window.endTime,
     fightStartTime: fightStart,
     fightEndTime: fightEnd,
     fightDuration: fightEnd - fightStart,
@@ -241,7 +246,7 @@ export async function getEvents(args: GetEventsArgs): Promise<GetEventsResult> {
     truncated,
   };
   if (truncated && nextPageTimestamp != null) {
-    result.nextPageTimestamp = nextPageTimestamp;
+    result.nextPageTimestamp = nextPageTimestamp - fightStart;
   }
   return result;
 }

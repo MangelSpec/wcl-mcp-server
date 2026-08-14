@@ -5,6 +5,43 @@ const REPORT_TIME_KEYS = new Set([
   "timestamp",
 ]);
 
+export interface FightRelativeWindow {
+  endTime: number;
+  fightDuration: number;
+  reportRelativeEndTime: number;
+  reportRelativeStartTime: number;
+  startTime: number;
+}
+
+export function resolveFightRelativeWindow(
+  fightStartTime: number,
+  fightEndTime: number,
+  requestedStartTime?: number,
+  requestedEndTime?: number,
+): FightRelativeWindow {
+  const fightDuration = fightEndTime - fightStartTime;
+  const startTime = requestedStartTime ?? 0;
+  const endTime = requestedEndTime ?? fightDuration;
+  if (
+    !Number.isFinite(startTime) ||
+    !Number.isFinite(endTime) ||
+    startTime < 0 ||
+    endTime > fightDuration ||
+    startTime >= endTime
+  ) {
+    throw new Error(
+      `Invalid fight-relative window ${startTime}..${endTime}; expected 0 <= start < end <= ${fightDuration}`,
+    );
+  }
+  return {
+    endTime,
+    fightDuration,
+    reportRelativeEndTime: fightStartTime + endTime,
+    reportRelativeStartTime: fightStartTime + startTime,
+    startTime,
+  };
+}
+
 function relativeKey(key: string): string {
   return `fightRelative${key[0]?.toUpperCase() ?? ""}${key.slice(1)}`;
 }
