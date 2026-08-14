@@ -49,6 +49,7 @@ import {
   WINDOW_EVENT_TYPES,
 } from "./tools/getFightWindowContext.js";
 import { getPlayerFightSummary } from "./tools/getPlayerFightSummary.js";
+import { rankDamageTakenByAbility } from "./tools/rankDamageTakenByAbility.js";
 import { runGraphQL } from "./tools/graphql.js";
 
 const TOOLS: Tool[] = [
@@ -374,6 +375,34 @@ const TOOLS: Tool[] = [
     },
   },
   {
+    name: "wcl_rank_damage_taken_by_ability",
+    description:
+      "Rank fight-roster players by total damage taken from one or more named abilities. Use for questions such as who soaked or was hit most by Light Quill, Void Quill, or any other specific mechanic. Returns compact combined player totals plus deterministic per-ability rankings and metric leaders without exposing the multi-megabyte raw damage table. Shared fragments such as 'Quills' match singular Light Quill and Void Quill names.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reportCode: { type: "string" },
+        fightID: { type: "number" },
+        abilityNames: {
+          type: "array",
+          items: { type: "string" },
+          minItems: 1,
+          maxItems: 10,
+          description:
+            "Exact names or shared fragments to include, for example ['Light Quill', 'Void Quill'] or ['Quills'].",
+        },
+        includeNonPlayers: {
+          type: "boolean",
+          default: false,
+          description:
+            "Include pets and NPC actors in addition to fight-roster players.",
+        },
+      },
+      required: ["reportCode", "fightID", "abilityNames"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "wcl_graphql",
     description:
       "Raw GraphQL escape hatch — run an arbitrary query against the WCL " +
@@ -588,6 +617,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return ok(data);
       }
 
+      case "wcl_rank_damage_taken_by_ability": {
+        const reportCode = requireString(args, "reportCode");
+        const fightID = requireNumber(args, "fightID");
+        const abilityNames = requireStringArray(args, "abilityNames", 10);
+        const includeNonPlayers = optionalBoolean(args, "includeNonPlayers");
+        const data = await rankDamageTakenByAbility({
+          reportCode,
+          fightID,
+          abilityNames,
+          includeNonPlayers,
+        });
+        return ok(data);
+      }
+
       case "wcl_get_player_fight_summary": {
         const reportCode = requireString(args, "reportCode");
         const fightID = requireNumber(args, "fightID");
@@ -664,6 +707,23 @@ function optionalString(
     throw new Error(`${key} must be a non-empty string`);
   }
   return value;
+}
+
+function requireStringArray(
+  args: Record<string, unknown>,
+  key: string,
+  maxItems: number,
+): string[] {
+  const value = args[key];
+  if (!Array.isArray(value) || value.length < 1 || value.length > maxItems) {
+    throw new Error(`${key} must contain 1 to ${maxItems} strings`);
+  }
+  return value.map((entry) => {
+    if (typeof entry !== "string" || entry.trim().length === 0) {
+      throw new Error(`${key} must contain only non-empty strings`);
+    }
+    return entry.trim();
+  });
 }
 
 function optionalBoolean(
