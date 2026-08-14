@@ -29,6 +29,7 @@
  */
 
 import { executeAndUnwrap } from "../client.js";
+import { addFightRelativeTimes } from "../fightTime.js";
 import { resolveFightBounds } from "../reportCache.js";
 
 /**
@@ -79,7 +80,10 @@ export interface GetEventsResult {
   /** Time window actually queried (post-resolution, post-clamping). */
   startTime: number;
   endTime: number;
-  /** Raw concatenated event objects from all pages. Shape varies by dataType. */
+  fightStartTime: number;
+  fightEndTime: number;
+  fightDuration: number;
+  /** Event time fields are fight-relative; reportRelative* preserves WCL's raw values. */
   events: unknown[];
   pagesReturned: number;
   /** True iff we stopped because we hit maxPages with more data remaining. */
@@ -189,11 +193,15 @@ export async function getEvents(args: GetEventsArgs): Promise<GetEventsResult> {
     }
 
     if (Array.isArray(events.data)) {
-      allEvents.push(...(events.data as unknown[]));
+      allEvents.push(
+        ...events.data.map((event) =>
+          addFightRelativeTimes(event, fightStart, fightEnd),
+        ),
+      );
     } else if (events.data != null) {
       // Defensive: WCL may occasionally return a non-array shape for exotic
       // dataTypes. Push the raw value so nothing is silently lost.
-      allEvents.push(events.data);
+      allEvents.push(addFightRelativeTimes(events.data, fightStart, fightEnd));
     }
 
     nextPageTimestamp = events.nextPageTimestamp;
@@ -225,6 +233,9 @@ export async function getEvents(args: GetEventsArgs): Promise<GetEventsResult> {
     dataType: args.dataType,
     startTime: windowStart,
     endTime: windowEnd,
+    fightStartTime: fightStart,
+    fightEndTime: fightEnd,
+    fightDuration: fightEnd - fightStart,
     events: allEvents,
     pagesReturned,
     truncated,

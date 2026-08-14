@@ -13,13 +13,14 @@
  * misleading "not found" error. A short TTL keeps the savings for busy
  * query bursts while letting new fights surface on the next minute.
  *
- * The cache is unbounded in size; for a single-session stdio server that
- * only ever looks at a handful of reports, this is fine.
+ * The cache is bounded so long-running servers cannot retain an unlimited
+ * number of report payloads.
  */
 
 import { executeAndUnwrap } from "./client.js";
 
 const CACHE_TTL_MS = 60_000;
+const CACHE_MAX_ENTRIES = 100;
 
 export interface Fight {
   id: number;
@@ -41,6 +42,7 @@ export interface ReportMeta {
 }
 
 export interface CachedReport {
+  fetchedAt: number;
   report: ReportMeta;
   fights: Fight[];
 }
@@ -49,6 +51,7 @@ interface CacheEntry {
   value: CachedReport;
   /** epoch ms at which this entry becomes stale */
   expiresAt: number;
+  fetchedAt: number;
 }
 
 const cache = new Map<string, CacheEntry>();
@@ -96,22 +99,30 @@ interface QueryResult {
   };
 }
 
-export async function getCachedReport(reportCode: string): Promise<CachedReport> {
+export async function getCachedReport(
+  reportCode: string,
+  options: { refresh?: boolean } = {},
+): Promise<CachedReport> {
   const now = Date.now();
   const hit = cache.get(reportCode);
-  if (hit && hit.expiresAt > now) return hit.value;
+  if (hit && shouldUseReportCache(hit, now, options.refresh ?? false)) {
+    return hit.value;
+  }
   if (hit) cache.delete(reportCode); // expired — evict so we don't grow unbounded
 
   const pending = inflight.get(reportCode);
   if (pending) return pending;
 
   const promise = (async () => {
-    const data = await executeAndUnwrap<QueryResult>(QUERY, { code: reportCode });
+    const data = await executeAndUnwrap<QueryResult>(QUERY, {
+      code: reportCode,
+    });
     const report = data.reportData.report;
     if (!report) {
       throw new Error(`WCL report not found: ${reportCode}`);
     }
     const value: CachedReport = {
+      fetchedAt: Date.now(),
       report: {
         code: report.code,
         title: report.title,
@@ -120,7 +131,18 @@ export async function getCachedReport(reportCode: string): Promise<CachedReport>
       },
       fights: report.fights,
     };
-    cache.set(reportCode, { value, expiresAt: Date.now() + CACHE_TTL_MS });
+    const fetchedAt = value.fetchedAt;
+    cache.delete(reportCode);
+    cache.set(reportCode, {
+      expiresAt: fetchedAt + CACHE_TTL_MS,
+      fetchedAt,
+      value,
+    });
+    while (cache.size > CACHE_MAX_ENTRIES) {
+      const oldest = cache.keys().next().value as string | undefined;
+      if (!oldest) break;
+      cache.delete(oldest);
+    }
     return value;
   })();
 
@@ -130,6 +152,14 @@ export async function getCachedReport(reportCode: string): Promise<CachedReport>
   } finally {
     inflight.delete(reportCode);
   }
+}
+
+export function shouldUseReportCache(
+  entry: { expiresAt: number; fetchedAt: number },
+  now: number,
+  refresh: boolean,
+): boolean {
+  return entry.expiresAt > now && !refresh;
 }
 
 /** Resolve a fightID to its relative-ms time bounds, fetching the report if needed. */

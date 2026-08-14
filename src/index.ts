@@ -37,6 +37,13 @@ import { getFights } from "./tools/getFights.js";
 import { getPlayerInfo } from "./tools/getPlayerInfo.js";
 import { getTable, TABLE_VIEWS } from "./tools/getTable.js";
 import { getEvents, EVENT_DATA_TYPES } from "./tools/getEvents.js";
+import {
+  EXTERNAL_BUFF_FILTERS,
+  findPeerParses,
+  PEER_METRICS,
+} from "./tools/findPeerParses.js";
+import { getFightContext } from "./tools/getFightContext.js";
+import { getPlayerFightSummary } from "./tools/getPlayerFightSummary.js";
 import { runGraphQL } from "./tools/graphql.js";
 
 const TOOLS: Tool[] = [
@@ -62,13 +69,16 @@ const TOOLS: Tool[] = [
       "report's title and timestamps plus an array of fights with their IDs, " +
       "encounter IDs, names, relative-ms time bounds, kill/wipe status, size, " +
       "and difficulty. Optional filters: encounterID to isolate one boss, " +
-      "killType to isolate Encounters/Kills/Wipes/Trash.",
+      "killType to isolate Encounters/Kills/Wipes/Trash. Explicit calls refresh " +
+      "the report's fight list by default for live logging; concurrent refreshes " +
+      "are deduplicated and internal table/event lookups reuse that fresh list.",
     inputSchema: {
       type: "object",
       properties: {
         reportCode: {
           type: "string",
-          description: "The WCL report code (the alphanumeric ID from the report URL).",
+          description:
+            "The WCL report code (the alphanumeric ID from the report URL).",
         },
         encounterID: {
           type: "number",
@@ -81,6 +91,12 @@ const TOOLS: Tool[] = [
             "Optional kill-type filter. 'Encounters' = all boss fights (kills + wipes), " +
             "'Kills' = successful kills only, 'Wipes' = failed boss attempts, " +
             "'Trash' = non-boss combat.",
+        },
+        refresh: {
+          type: "boolean",
+          default: true,
+          description:
+            "Refresh report metadata before filtering. Keep true for last/latest, ordinals, and unspecified fights. Set false only for an already-known exact fight ID when bounded cached metadata is acceptable.",
         },
       },
       required: ["reportCode"],
@@ -118,7 +134,9 @@ const TOOLS: Tool[] = [
       "tool — it returns the same aggregated data you see on the WCL " +
       "website (damage done, healing done, deaths, etc.). The response " +
       "shape is WCL's untyped JSON blob and varies per view. Get the " +
-      "fightID from wcl_get_fights first.",
+      "fightID from wcl_get_fights first. In-fight time fields are normalized " +
+      "to fight-relative milliseconds; reportRelative* preserves WCL's raw " +
+      "value and fightRelative* provides an explicit alias.",
     inputSchema: {
       type: "object",
       properties: {
@@ -139,7 +157,8 @@ const TOOLS: Tool[] = [
         },
         sourceID: {
           type: "number",
-          description: "Optional: filter to a single source actor (player/pet).",
+          description:
+            "Optional: filter to a single source actor (player/pet).",
         },
         targetID: {
           type: "number",
@@ -159,6 +178,9 @@ const TOOLS: Tool[] = [
     description:
       "Fetch raw combat log events for a fight with filtering. Events are " +
       "returned as WCL's untyped JSON blobs (shape varies per dataType). " +
+      "Event timestamps are normalized to fight-relative milliseconds. The raw " +
+      "WCL value is preserved as reportRelativeTimestamp and an explicit " +
+      "fightRelativeTimestamp alias is included. " +
       "Auto-paginates internally up to maxPages (default 3) to protect " +
       "rate-limit budget. If the page cap is hit with more data remaining, " +
       "the response has truncated:true and nextPageTimestamp — pass that " +
@@ -210,7 +232,8 @@ const TOOLS: Tool[] = [
         },
         endTime: {
           type: "number",
-          description: "Override end time in relative ms. Defaults to fight end.",
+          description:
+            "Override end time in relative ms. Defaults to fight end.",
         },
         maxPages: {
           type: "number",
@@ -219,6 +242,78 @@ const TOOLS: Tool[] = [
         },
       },
       required: ["reportCode", "fightID", "dataType"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wcl_find_peer_parses",
+    description:
+      "Find top-ranked same-spec parses near a target fight duration. Scans a bounded number of performance-ordered ranking pages, validates the undocumented ranking JSON, and sorts valid candidates by duration distance. Results are discovery candidates only: hydrate candidates with wcl_get_fight_context before comparison. Reports sampling, bracket, and external-buff limitations explicitly.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        encounterID: { type: "number" },
+        difficulty: { type: "number" },
+        className: { type: "string", description: "WCL class slug/name." },
+        specName: { type: "string", description: "WCL spec slug/name." },
+        targetDurationMs: { type: "number" },
+        metric: { type: "string", enum: [...PEER_METRICS] },
+        bracket: {
+          type: "number",
+          description: "Optional WCL item-level ranking bracket.",
+        },
+        externalBuffs: {
+          type: "string",
+          enum: [...EXTERNAL_BUFF_FILTERS],
+        },
+        durationTolerancePercent: { type: "number", default: 15 },
+        maxPages: { type: "number", default: 2 },
+        resultLimit: { type: "number", default: 5 },
+        excludeReportCode: { type: "string" },
+      },
+      required: [
+        "encounterID",
+        "difficulty",
+        "className",
+        "specName",
+        "targetDurationMs",
+      ],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wcl_get_fight_context",
+    description:
+      "Hydrate an exact report/fight with typed encounter, difficulty, duration, average item level, fight-specific player specs/item levels, and raid composition. Use to verify ranking candidates before comparing them. Optionally includes compact talent-node and consumable summaries without returning WCL's very large raw CombatantInfo payload.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reportCode: { type: "string" },
+        fightID: { type: "number" },
+        includeCombatantInfo: { type: "boolean", default: false },
+      },
+      required: ["reportCode", "fightID"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wcl_get_player_fight_summary",
+    description:
+      "Fetch damage, casts, buffs, resources, and deaths for one player in one fight in a single WCL request. Returns deterministic normalized performance metrics plus fight-relative raw table payloads. Get the fight-specific source actor ID from wcl_get_fight_context.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reportCode: { type: "string" },
+        fightID: { type: "number" },
+        sourceID: { type: "number" },
+        includeRawTables: {
+          type: "boolean",
+          default: false,
+          description:
+            "Include large raw WCL table payloads in addition to normalized metrics.",
+        },
+      },
+      required: ["reportCode", "fightID", "sourceID"],
       additionalProperties: false,
     },
   },
@@ -289,7 +384,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           "Wipes",
           "Trash",
         ] as const);
-        const data = await getFights({ reportCode, encounterID, killType });
+        const refresh = optionalBoolean(args, "refresh");
+        const data = await getFights({
+          reportCode,
+          encounterID,
+          killType,
+          refresh,
+        });
         return ok(data);
       }
 
@@ -339,6 +440,72 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           startTime,
           endTime,
           maxPages,
+        });
+        return ok(data);
+      }
+
+      case "wcl_find_peer_parses": {
+        const encounterID = requireNumber(args, "encounterID");
+        const difficulty = requireNumber(args, "difficulty");
+        const className = requireString(args, "className");
+        const specName = requireString(args, "specName");
+        const targetDurationMs = requireNumber(args, "targetDurationMs");
+        const metric = optionalEnum(args, "metric", PEER_METRICS);
+        const bracket = optionalNumber(args, "bracket");
+        const externalBuffs = optionalEnum(
+          args,
+          "externalBuffs",
+          EXTERNAL_BUFF_FILTERS,
+        );
+        const durationTolerancePercent = optionalNumber(
+          args,
+          "durationTolerancePercent",
+        );
+        const maxPages = optionalNumber(args, "maxPages");
+        const resultLimit = optionalNumber(args, "resultLimit");
+        const excludeReportCode = optionalString(args, "excludeReportCode");
+        const data = await findPeerParses({
+          encounterID,
+          difficulty,
+          className,
+          specName,
+          targetDurationMs,
+          metric,
+          bracket,
+          externalBuffs,
+          durationTolerancePercent,
+          maxPages,
+          resultLimit,
+          excludeReportCode,
+        });
+        return ok(data);
+      }
+
+      case "wcl_get_fight_context": {
+        const reportCode = requireString(args, "reportCode");
+        const fightID = requireNumber(args, "fightID");
+        const includeCombatantInfo = optionalBoolean(
+          args,
+          "includeCombatantInfo",
+        );
+        const data = await getFightContext({
+          reportCode,
+          fightID,
+          includeCombatantInfo,
+        });
+        return ok(data);
+      }
+
+      case "wcl_get_player_fight_summary": {
+        const reportCode = requireString(args, "reportCode");
+        const fightID = requireNumber(args, "fightID");
+        const sourceID = requireNumber(args, "sourceID");
+        const includeRawTables = optionalBoolean(args, "includeRawTables");
+        const data = await getPlayerFightSummary({
+          reportCode,
+          fightID,
+          sourceID,
+          includeRawTables,
         });
         return ok(data);
       }
@@ -395,6 +562,28 @@ function requireString(args: Record<string, unknown>, key: string): string {
   return v.trim();
 }
 
+function optionalString(
+  args: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = args[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`${key} must be a non-empty string`);
+  }
+  return value;
+}
+
+function optionalBoolean(
+  args: Record<string, unknown>,
+  key: string,
+): boolean | undefined {
+  const value = args[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") throw new Error(`${key} must be a boolean`);
+  return value;
+}
+
 function requireNumber(args: Record<string, unknown>, key: string): number {
   const v = args[key];
   if (typeof v !== "number" || !Number.isFinite(v)) {
@@ -403,7 +592,10 @@ function requireNumber(args: Record<string, unknown>, key: string): number {
   return v;
 }
 
-function optionalNumber(args: Record<string, unknown>, key: string): number | undefined {
+function optionalNumber(
+  args: Record<string, unknown>,
+  key: string,
+): number | undefined {
   const v = args[key];
   if (v === undefined || v === null) return undefined;
   if (typeof v !== "number" || !Number.isFinite(v)) {

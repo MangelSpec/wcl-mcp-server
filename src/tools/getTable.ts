@@ -15,6 +15,7 @@
  */
 
 import { executeAndUnwrap } from "../client.js";
+import { addFightRelativeTimes } from "../fightTime.js";
 import { resolveFightBounds } from "../reportCache.js";
 
 /**
@@ -67,7 +68,8 @@ export interface GetTableResult {
   view: TableView;
   startTime: number;
   endTime: number;
-  /** WCL's table payload, shape varies by view. */
+  fightDuration: number;
+  /** WCL table payload with safe fight-relative time fields and preserved raw values. */
   table: unknown;
 }
 
@@ -114,7 +116,10 @@ export async function getTable(args: GetTableArgs): Promise<GetTableResult> {
   // requireEnum(TABLE_VIEWS), so the lookup is guaranteed to hit a value.
   const dataType = VIEW_TO_DATA_TYPE[args.view];
 
-  const { startTime, endTime } = await resolveFightBounds(args.reportCode, args.fightID);
+  const { startTime, endTime } = await resolveFightBounds(
+    args.reportCode,
+    args.fightID,
+  );
 
   const variables: Record<string, unknown> = {
     code: args.reportCode,
@@ -137,6 +142,11 @@ export async function getTable(args: GetTableArgs): Promise<GetTableResult> {
     view: args.view,
     startTime,
     endTime,
-    table: data.reportData.report.table,
+    fightDuration: endTime - startTime,
+    table: addFightRelativeTimes(
+      data.reportData.report.table,
+      startTime,
+      endTime,
+    ),
   };
 }

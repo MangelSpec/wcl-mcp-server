@@ -2,15 +2,20 @@
  * wcl_get_fights — list fights in a WCL report, with optional client-side filters.
  *
  * Under the hood this reads from the report cache (see reportCache.ts). The
- * first call for a given reportCode hits the API; subsequent calls (including
- * from wcl_get_table / wcl_get_events bounds resolution) are free.
+ * explicit calls refresh report metadata by default so live raid uploads expose
+ * new pulls. Concurrent refreshes are deduplicated, and subsequent table/event
+ * bounds lookups reuse the freshly loaded list.
  *
  * Filtering is done client-side on the returned array rather than via
  * GraphQL variables — the fights list is small, and this avoids depending
  * on WCL enum spellings we'd otherwise have to keep in sync.
  */
 
-import { getCachedReport, type Fight, type ReportMeta } from "../reportCache.js";
+import {
+  getCachedReport,
+  type Fight,
+  type ReportMeta,
+} from "../reportCache.js";
 
 export type KillTypeFilter = "Encounters" | "Kills" | "Wipes" | "Trash";
 
@@ -18,15 +23,22 @@ export interface GetFightsArgs {
   reportCode: string;
   encounterID?: number;
   killType?: KillTypeFilter;
+  refresh?: boolean;
 }
 
 export interface GetFightsResult {
+  freshness: {
+    ageMs: number;
+    fetchedAtEpochMs: number;
+  };
   report: ReportMeta;
   fights: Fight[];
 }
 
 export async function getFights(args: GetFightsArgs): Promise<GetFightsResult> {
-  const cached = await getCachedReport(args.reportCode);
+  const cached = await getCachedReport(args.reportCode, {
+    refresh: args.refresh ?? true,
+  });
   let fights = cached.fights;
 
   if (typeof args.encounterID === "number") {
@@ -51,5 +63,12 @@ export async function getFights(args: GetFightsArgs): Promise<GetFightsResult> {
     }
   }
 
-  return { report: cached.report, fights };
+  return {
+    freshness: {
+      ageMs: Math.max(0, Date.now() - cached.fetchedAt),
+      fetchedAtEpochMs: cached.fetchedAt,
+    },
+    report: cached.report,
+    fights,
+  };
 }
