@@ -23,6 +23,8 @@ const QUERY = /* GraphQL */ `
           sourceID: $sourceID
           dataType: DamageDone
         )
+        damageRankings: rankings(fightIDs: $fightIDs, playerMetric: dps)
+        healingRankings: rankings(fightIDs: $fightIDs, playerMetric: hps)
         casts: table(fightIDs: $fightIDs, sourceID: $sourceID, dataType: Casts)
         buffs: table(fightIDs: $fightIDs, sourceID: $sourceID, dataType: Buffs)
         resources: table(
@@ -51,7 +53,9 @@ interface QueryResult {
       buffs: unknown;
       casts: unknown;
       damage: unknown;
+      damageRankings: unknown;
       deaths: unknown;
+      healingRankings: unknown;
       resources: unknown;
     } | null;
   };
@@ -79,6 +83,16 @@ export async function getPlayerFightSummary(args: GetPlayerFightSummaryArgs) {
     fightDurationMs: bounds.endTime - bounds.startTime,
     payloadStability: "undocumented-json",
     metrics,
+    parsePercentiles: {
+      damage: extractPlayerParsePercentiles(
+        report.damageRankings,
+        args.sourceID,
+      ),
+      healing: extractPlayerParsePercentiles(
+        report.healingRankings,
+        args.sourceID,
+      ),
+    },
     rawTablesIncluded: args.includeRawTables ?? false,
     ...(args.includeRawTables
       ? {
@@ -111,6 +125,29 @@ export async function getPlayerFightSummary(args: GetPlayerFightSummaryArgs) {
           },
         }
       : {}),
+  };
+}
+
+export function extractPlayerParsePercentiles(
+  value: unknown,
+  sourceID: number,
+) {
+  const parsed = parseJsonValue(value);
+  const rankings = findRankingRecords(parsed, sourceID);
+  const ranking = rankings.find(
+    (record) =>
+      finiteNumber(record.rankPercent) !== null ||
+      finiteNumber(record.bracketPercent) !== null,
+  );
+  if (!ranking) return null;
+
+  return {
+    classPercent: finiteNumber(ranking.rankPercent),
+    itemLevelClassPercent: finiteNumber(ranking.bracketPercent),
+    itemLevel: finiteNumber(ranking.bracketData),
+    amount: finiteNumber(ranking.amount),
+    totalClassParses: finiteNumber(ranking.totalParses),
+    totalItemLevelClassParses: finiteNumber(ranking.bracketTotalParses),
   };
 }
 
@@ -176,6 +213,36 @@ function getData(value: unknown): Record<string, unknown> {
   return data && typeof data === "object"
     ? (data as Record<string, unknown>)
     : {};
+}
+
+function findRankingRecords(
+  value: unknown,
+  sourceID: number,
+): Record<string, unknown>[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => findRankingRecords(entry, sourceID));
+  }
+  if (!value || typeof value !== "object") return [];
+
+  const record = value as Record<string, unknown>;
+  const matchesSource =
+    finiteNumber(record.id) === sourceID ||
+    finiteNumber(record.sourceID) === sourceID;
+  return [
+    ...(matchesSource ? [record] : []),
+    ...Object.values(record).flatMap((entry) =>
+      findRankingRecords(entry, sourceID),
+    ),
+  ];
+}
+
+function parseJsonValue(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
 }
 
 function getArray(

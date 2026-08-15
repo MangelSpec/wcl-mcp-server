@@ -305,7 +305,7 @@ const TOOLS: Tool[] = [
   {
     name: "wcl_get_player_fight_summary",
     description:
-      "Fetch damage, casts, buffs, resources, and deaths for one player in one fight in a single WCL request. Returns deterministic normalized performance metrics plus fight-relative raw table payloads. Get the fight-specific source actor ID from wcl_get_fight_context.",
+      "Fetch damage, casts, buffs, resources, deaths, and exact-fight DPS/HPS parse percentiles for one player in one WCL request. Returns deterministic normalized performance metrics, class and item-level class parse percentiles, plus optional fight-relative raw table payloads. Get the fight-specific source actor ID from wcl_get_fight_context.",
     inputSchema: {
       type: "object",
       properties: {
