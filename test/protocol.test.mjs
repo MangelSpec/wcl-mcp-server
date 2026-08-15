@@ -31,6 +31,13 @@ for (const mode of ["auto", "legacy"]) {
       const { tools } = await client.listTools();
       assert.equal(tools.length, 12);
       assert.ok(tools.every((tool) => tool.outputSchema?.type === "object"));
+      const playerSummary = tools.find(
+        (tool) => tool.name === "wcl_get_player_fight_summary",
+      );
+      assert.equal(
+        playerSummary?.inputSchema.properties.includeRankings.default,
+        true,
+      );
       assert.equal(
         client.getProtocolEra(),
         mode === "auto" ? "modern" : "legacy",

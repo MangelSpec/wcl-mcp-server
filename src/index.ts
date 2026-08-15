@@ -307,13 +307,19 @@ const TOOL_DEFINITIONS: Tool[] = [
   {
     name: "wcl_get_player_fight_summary",
     description:
-      "Fetch damage, distinct boss targets, casts, buffs, resources, deaths, and exact-fight DPS/HPS parse percentiles for one player in one WCL request. Returns deterministic normalized performance metrics, class and item-level class parse percentiles, plus optional fight-relative raw table payloads. Get the fight-specific source actor ID from wcl_get_fight_context.",
+      "Fetch damage, distinct boss targets, casts, buffs, resources, deaths, and optional exact-fight DPS/HPS parse percentiles for one player in one WCL request. Returns deterministic normalized performance metrics plus optional fight-relative raw table payloads. Keep includeRankings enabled for the analyzed player; disable it when hydrating ranked peers because their percentile payloads are unnecessary and expensive. Get the fight-specific source actor ID from wcl_get_fight_context.",
     inputSchema: {
       type: "object",
       properties: {
         reportCode: { type: "string" },
         fightID: { type: "number" },
         sourceID: { type: "number" },
+        includeRankings: {
+          type: "boolean",
+          default: true,
+          description:
+            "Fetch full-fight DPS/HPS ranking payloads. Disable for ranked peer hydration.",
+        },
         includeRawTables: {
           type: "boolean",
           default: false,
@@ -649,11 +655,13 @@ async function handleToolCall(request: CallToolRequest) {
         const reportCode = requireString(args, "reportCode");
         const fightID = requireNumber(args, "fightID");
         const sourceID = requireNumber(args, "sourceID");
+        const includeRankings = optionalBoolean(args, "includeRankings");
         const includeRawTables = optionalBoolean(args, "includeRawTables");
         const data = await getPlayerFightSummary({
           reportCode,
           fightID,
           sourceID,
+          includeRankings,
           includeRawTables,
         });
         return ok(data);

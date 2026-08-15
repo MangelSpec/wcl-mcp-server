@@ -105,6 +105,8 @@ Replace `<absolute-path-to-wcl-mcp-server>` with wherever you cloned this repo. 
 
 Credentials are read from the [.env](.env) file at repo root via `dotenv`, which is resolved relative to the compiled script's own location (see [src/index.ts](src/index.ts)) — so `.env` is found regardless of the client's working directory, and you do **not** need to set `cwd` or pass vars through the MCP client's `env` block. If you'd rather inject them explicitly, you can:
 
+Individual Warcraft Logs GraphQL requests time out after 60 seconds by default. Set `WCL_REQUEST_TIMEOUT_MS` between `5000` and `180000` when the deployment needs a different bounded request budget.
+
 ```json
 {
   "mcpServers": {

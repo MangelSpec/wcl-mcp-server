@@ -6,7 +6,7 @@
  *   token, `/api/v2/client` for client credentials. Sending a user token to the
  *   client endpoint does not error — it just silently drops you back to
  *   public-only visibility, so the pairing matters.
- * - 30s request timeout
+ * - Configurable request timeout (60s by default)
  * - Parses `rateLimitData` out of any response that happens to include it
  *   and caches it in-process (advisory only — see dev doc)
  * - On 401, invalidates the cached token and retries once
@@ -19,7 +19,29 @@ const GRAPHQL_ENDPOINTS: Record<AuthMode, string> = {
   user: "https://www.warcraftlogs.com/api/v2/user",
   client: "https://www.warcraftlogs.com/api/v2/client",
 };
-const REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+const MIN_REQUEST_TIMEOUT_MS = 5_000;
+const MAX_REQUEST_TIMEOUT_MS = 180_000;
+
+export function parseRequestTimeoutMs(value: string | undefined): number {
+  if (value === undefined || value.trim() === "") {
+    return DEFAULT_REQUEST_TIMEOUT_MS;
+  }
+  if (!/^\d+$/.test(value.trim())) {
+    throw new Error("WCL_REQUEST_TIMEOUT_MS must be an integer");
+  }
+  const timeoutMs = Number(value);
+  if (
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs < MIN_REQUEST_TIMEOUT_MS ||
+    timeoutMs > MAX_REQUEST_TIMEOUT_MS
+  ) {
+    throw new Error(
+      `WCL_REQUEST_TIMEOUT_MS must be between ${MIN_REQUEST_TIMEOUT_MS} and ${MAX_REQUEST_TIMEOUT_MS}`,
+    );
+  }
+  return timeoutMs;
+}
 
 export interface RateLimitData {
   limitPerHour: number;
@@ -68,9 +90,12 @@ export async function executeGraphQL<T = unknown>(
 ): Promise<GraphQLResponse<T>> {
   const { accessToken, mode } = await getAuth();
   const endpoint = GRAPHQL_ENDPOINTS[mode];
+  const requestTimeoutMs = parseRequestTimeoutMs(
+    process.env.WCL_REQUEST_TIMEOUT_MS,
+  );
 
   const controller = new AbortController();
-  const timeoutHandle = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeoutHandle = setTimeout(() => controller.abort(), requestTimeoutMs);
 
   let res: Response;
   try {
@@ -86,7 +111,7 @@ export async function executeGraphQL<T = unknown>(
     });
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
-      throw new Error(`WCL GraphQL request timed out after ${REQUEST_TIMEOUT_MS}ms`);
+      throw new Error(`WCL GraphQL request timed out after ${requestTimeoutMs}ms`);
     }
     throw err;
   } finally {

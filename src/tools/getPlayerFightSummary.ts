@@ -4,6 +4,7 @@ import { resolveFightBounds } from "../reportCache.js";
 
 export interface GetPlayerFightSummaryArgs {
   fightID: number;
+  includeRankings?: boolean;
   includeRawTables?: boolean;
   reportCode: string;
   sourceID: number;
@@ -14,6 +15,7 @@ const QUERY = /* GraphQL */ `
     $code: String!
     $fightIDs: [Int!]!
     $sourceID: Int!
+    $includeRankings: Boolean!
     $includeRawTables: Boolean!
   ) {
     reportData {
@@ -24,7 +26,9 @@ const QUERY = /* GraphQL */ `
           dataType: DamageDone
         )
         damageRankings: rankings(fightIDs: $fightIDs, playerMetric: dps)
+          @include(if: $includeRankings)
         healingRankings: rankings(fightIDs: $fightIDs, playerMetric: hps)
+          @include(if: $includeRankings)
         casts: table(fightIDs: $fightIDs, sourceID: $sourceID, dataType: Casts)
         buffs: table(fightIDs: $fightIDs, sourceID: $sourceID, dataType: Buffs)
         resources: table(
@@ -67,6 +71,7 @@ export async function getPlayerFightSummary(args: GetPlayerFightSummaryArgs) {
     code: args.reportCode,
     fightIDs: [args.fightID],
     sourceID: args.sourceID,
+    includeRankings: args.includeRankings ?? true,
     includeRawTables: args.includeRawTables ?? false,
   });
   const report = data.reportData.report;
@@ -83,6 +88,7 @@ export async function getPlayerFightSummary(args: GetPlayerFightSummaryArgs) {
     fightDurationMs: bounds.endTime - bounds.startTime,
     payloadStability: "undocumented-json",
     metrics,
+    rankingsIncluded: args.includeRankings ?? true,
     parsePercentiles: {
       damage: extractPlayerParsePercentiles(
         report.damageRankings,
