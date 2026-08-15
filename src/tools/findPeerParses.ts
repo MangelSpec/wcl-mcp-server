@@ -134,7 +134,7 @@ export async function findPeerParses(args: FindPeerParsesArgs) {
     peers,
     caveats: [
       "The ranking payload is undocumented JSON and was runtime-validated.",
-      "Ranking pages are performance-ordered, not duration-ordered; a bounded scan can miss a closer-duration parse.",
+      "Ranking pages are performance-ordered; duration and item level filter eligibility, then the selected metric orders valid candidates.",
       "When an exact item-level bracket returns no rows, the tool falls back to overall rankings and uses bracketData only as a proximity heuristic.",
       "External-buff filter support is not reported by WCL and may be ignored for this encounter.",
       "Hydrate each selected report/fight and verify item level and talents before using it as a peer.",
@@ -198,15 +198,9 @@ export function selectPeerCandidates(
   resultLimit: number,
   targetItemLevel?: number,
 ): PeerParseCandidate[] {
-  const withinTolerance = candidates
-    .filter(
-      (candidate) => candidate.durationDeltaPercent <= durationTolerancePercent,
-    )
-    .sort((a, b) =>
-      a.durationDeltaPercent === b.durationDeltaPercent
-        ? (b.amount ?? 0) - (a.amount ?? 0)
-        : a.durationDeltaPercent - b.durationDeltaPercent,
-    );
+  const withinTolerance = candidates.filter(
+    (candidate) => candidate.durationDeltaPercent <= durationTolerancePercent,
+  );
 
   const itemLevelMatches =
     targetItemLevel === undefined
@@ -216,9 +210,13 @@ export function selectPeerCandidates(
             candidate.bracketData !== null &&
             Math.abs(candidate.bracketData - targetItemLevel) <= 5,
         );
-  return (
-    itemLevelMatches.length > 0 ? itemLevelMatches : withinTolerance
-  ).slice(0, resultLimit);
+  return (itemLevelMatches.length > 0 ? itemLevelMatches : withinTolerance)
+    .sort(
+      (a, b) =>
+        (b.amount ?? 0) - (a.amount ?? 0) ||
+        a.durationDeltaPercent - b.durationDeltaPercent,
+    )
+    .slice(0, resultLimit);
 }
 
 export function parseRankingPage(value: unknown): RankingPage {

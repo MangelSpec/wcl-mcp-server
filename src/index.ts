@@ -254,7 +254,7 @@ const TOOLS: Tool[] = [
   {
     name: "wcl_find_peer_parses",
     description:
-      "Find top-ranked same-spec parses near a target fight duration. Scans a bounded number of performance-ordered ranking pages, validates the undocumented ranking JSON, and sorts valid candidates by duration distance. Results are discovery candidates only: hydrate candidates with wcl_get_fight_context before comparison. Reports sampling, bracket, and external-buff limitations explicitly.",
+      "Find top-ranked same-spec parses near a target fight duration. Scans a bounded number of performance-ordered ranking pages, validates the undocumented ranking JSON, filters by duration and item-level proximity, then returns the highest-performing valid candidates first. Results are discovery candidates only: hydrate candidates with wcl_get_fight_context before comparison. Reports sampling, bracket, and external-buff limitations explicitly.",
     inputSchema: {
       type: "object",
       properties: {
@@ -305,7 +305,7 @@ const TOOLS: Tool[] = [
   {
     name: "wcl_get_player_fight_summary",
     description:
-      "Fetch damage, casts, buffs, resources, deaths, and exact-fight DPS/HPS parse percentiles for one player in one WCL request. Returns deterministic normalized performance metrics, class and item-level class parse percentiles, plus optional fight-relative raw table payloads. Get the fight-specific source actor ID from wcl_get_fight_context.",
+      "Fetch damage, distinct boss targets, casts, buffs, resources, deaths, and exact-fight DPS/HPS parse percentiles for one player in one WCL request. Returns deterministic normalized performance metrics, class and item-level class parse percentiles, plus optional fight-relative raw table payloads. Get the fight-specific source actor ID from wcl_get_fight_context.",
     inputSchema: {
       type: "object",
       properties: {

@@ -165,6 +165,7 @@ export function extractPerformanceMetrics(
   const castEntries = getArray(getData(report.casts), "entries");
   const buffEntries = getArray(getData(report.buffs), "auras");
   const deathEntries = getArray(getData(report.deaths), "entries");
+  const bossTargets = aggregateBossTargets(damageEntries);
   const durationMs = fightEndTime - fightStartTime;
   const deathTime = deathEntries
     .map((entry) => finiteNumber(entry.deathTime))
@@ -183,6 +184,8 @@ export function extractPerformanceMetrics(
           .reduce((sum, target) => sum + (finiteNumber(target.total) ?? 0), 0),
       0,
     ),
+    bossTargetCount: bossTargets.length,
+    bossTargets,
     buffs: buffEntries.map((entry) => ({
       abilityID: finiteNumber(entry.guid),
       name: stringOrNull(entry.name),
@@ -205,6 +208,35 @@ export function extractPerformanceMetrics(
       0,
     ),
   };
+}
+
+function aggregateBossTargets(damageEntries: Record<string, unknown>[]) {
+  const targets = new Map<
+    string,
+    { id: number | null; name: string; totalDamage: number }
+  >();
+  for (const entry of damageEntries) {
+    for (const target of getArray(entry, "targets")) {
+      if (target.type !== "Boss") continue;
+      const name = stringOrNull(target.name);
+      if (!name) continue;
+      const id = finiteNumber(target.id);
+      const key = id === null ? `name:${name}` : `id:${id}`;
+      const existing = targets.get(key);
+      if (existing) {
+        existing.totalDamage += finiteNumber(target.total) ?? 0;
+      } else {
+        targets.set(key, {
+          id,
+          name,
+          totalDamage: finiteNumber(target.total) ?? 0,
+        });
+      }
+    }
+  }
+  return [...targets.values()].sort(
+    (left, right) => right.totalDamage - left.totalDamage,
+  );
 }
 
 function getData(value: unknown): Record<string, unknown> {
