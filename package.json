@@ -17,13 +17,15 @@
     "auth": "npm run build && node dist/authorize.js",
     "auth:status": "node dist/authorize.js --status",
     "auth:logout": "node dist/authorize.js --logout",
-    "prepare": "tsc"
+    "prepare": "tsc",
+    "test": "npm run build && node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@modelcontextprotocol/server": "2.0.0",
     "dotenv": "^16.4.5"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
     "@types/node": "^20.12.0",
     "tsx": "^4.19.0",
     "typescript": "^5.5.0"

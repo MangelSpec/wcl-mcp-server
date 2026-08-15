@@ -1,6 +1,6 @@
 # wcl-mcp-server
 
-MCP server that exposes the [Warcraft Logs V2 GraphQL API](https://www.warcraftlogs.com/v2-api-docs/warcraft/) as tools for AI agents. Talks stdio, ships six tools (fights, player info, tables, events, rate limit, raw GraphQL), and is designed so an agent can do end-to-end log analysis without ever touching the WCL website.
+MCP server that exposes the [Warcraft Logs V2 GraphQL API](https://www.warcraftlogs.com/v2-api-docs/warcraft/) as tools for AI agents. Talks stdio, ships 12 tools for report discovery and raid analysis, and is designed so an agent can do end-to-end log analysis without ever touching the WCL website.
 
 - Source: [src/](src/)
 - Entry point: [src/index.ts](src/index.ts)
@@ -78,7 +78,7 @@ Notes and caveats:
 
 ## Running the server
 
-The server speaks MCP over stdio. You don't run it interactively — an MCP client launches it as a subprocess and talks to it via stdin/stdout.
+The server speaks MCP over stdio. It negotiates the modern `2026-07-28` protocol and retains the legacy initialize handshake for older clients. You don't run it interactively — an MCP client launches it as a subprocess and talks to it via stdin/stdout.
 
 - **Production (compiled):** `node dist/index.js` — this is what MCP clients should invoke.
 - **Development (no build step):** `npm run dev` — runs [src/index.ts](src/index.ts) through `tsx`. Handy for iterating, but MCP clients should point at the compiled `dist/index.js` path.
@@ -134,7 +134,7 @@ For normal fight analysis, prefer this bounded sequence:
 
 The lower-level table and event tools remain available as focused escape hatches.
 
-All tools return a single `text` content block whose body is a JSON string. On error, `isError: true` and the text is either `Error: <message>` or a JSON object with `error` + structured context (e.g. `rateLimit` on 429). **Validate inputs carefully — every tool re-checks its arguments server-side and will refuse malformed requests.**
+All tools advertise output schemas and return native `structuredContent`. They also return the same payload as a JSON `text` content block for older clients. On error, `isError: true` includes a structured `error` payload while the text remains either `Error: <message>` or JSON with extra context such as `rateLimit` on 429. **Validate inputs carefully — every tool re-checks its arguments server-side and will refuse malformed requests.**
 
 ### `wcl_get_rate_limit`
 Check current V2 API rate limit state. **Call this before expensive queries** — WCL enforces a points-per-hour budget, and [src/tools/getEvents.ts](src/tools/getEvents.ts) especially can burn a lot if you set `maxPages` high.
@@ -152,13 +152,13 @@ List fights in a report. This is almost always the **first** tool you call for a
 ### `wcl_get_player_info`
 Fetch the actor roster for a report. Use this **once per report** to build a join table: WCL actor `id` ↔ in-game GUID ↔ character name ↔ class/spec/role. Spec is resolved across the whole report window; if a player swapped specs mid-run, the most-used spec wins.
 - Input: `{ reportCode }`
-- Output: `{ logOwner, actors: [{ id, guid, name, server, type, subType, spec, role }] }` where `role ∈ "dps" | "healers" | "tanks"`.
+- Output: `{ logOwner, actors: [{ id, gameID, name, server, type, subType, spec, role }] }` where `role ∈ "dps" | "healers" | "tanks"`.
 
 ### `wcl_get_table`
 The workhorse summary tool — same aggregated data the WCL website shows (damage done, healing, deaths, etc.). The response shape is WCL's untyped JSON blob and **varies per view**, so treat it as dynamic.
 - Input: `{ reportCode, fightID, view, sourceID?, targetID?, abilityID? }`
   - `view` — canonical views include `"damage-done"`, `"damage-taken"`, `"healing"`, `"deaths"`, `"casts"`, `"buffs"`, `"debuffs"`, `"summons"`, `"resources"`, `"interrupts"`, `"dispels"`, `"threat"`. Check [src/tools/getTable.ts](src/tools/getTable.ts) for the authoritative `TABLE_VIEWS` list.
-- Output: `{ table: <WCL's raw JSON>, fightWindow: { startTime, endTime } }`.
+- Output: `{ reportCode, fightID, view, startTime, endTime, fightDuration, table: <WCL's raw JSON> }`.
 - Pattern: get `fightID` from `wcl_get_fights` first, then call this.
 
 ### `wcl_get_events`
@@ -190,7 +190,7 @@ Raw GraphQL escape hatch. Use this when the structured tools don't cover what yo
 
 ## Smoke test
 
-[scripts/smoke-test.mjs](scripts/smoke-test.mjs) spawns the compiled server, exercises every tool against a known public report (`cqKLtMJC2abXhzNY`), and prints concise per-tool summaries. It hits the real API and burns ~15 rate-limit points.
+[scripts/smoke-test.mjs](scripts/smoke-test.mjs) spawns the compiled server, exercises the six core API tools against a known public report (`cqKLtMJC2abXhzNY`), and prints concise per-tool summaries. It hits the real API and burns ~15 rate-limit points. `npm test` runs offline protocol-contract tests for modern negotiation, legacy fallback, tool schemas, and structured errors.
 
 ```bash
 npm run build

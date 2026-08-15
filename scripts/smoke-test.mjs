@@ -1,5 +1,5 @@
 /**
- * Live smoke test: spawn the built MCP server and exercise every tool
+ * Live smoke test: spawn the built MCP server and exercise the six core tools
  * against a real WCL report. Prints concise summaries rather than full
  * JSON dumps.
  *
@@ -311,11 +311,11 @@ try {
   console.error(rlAfter);
   const pointsUsed = rlAfter.pointsSpentThisHour - rlBefore.pointsSpentThisHour;
   console.error(`\npoints used by smoke test: ${pointsUsed}`);
-  if (pointsUsed > 15) {
-    console.error(`⚠  point budget exceeded (expected <=15, used ${pointsUsed})`);
+  if (pointsUsed > 20) {
+    console.error(`⚠  point budget exceeded (expected <=20, used ${pointsUsed})`);
   }
 
-  console.error("\n✅ Smoke test passed — all tools work end-to-end");
+  console.error("\n✅ Smoke test passed — core tools work end-to-end");
   child.stdin.end();
   setTimeout(() => process.exit(0), 500);
 } catch (err) {

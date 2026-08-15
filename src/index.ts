@@ -5,8 +5,9 @@
  * Stdio-transport MCP server that exposes Warcraft Logs V2 GraphQL tools to
  * any MCP-compatible client (Claude Desktop, Claude Code, etc.).
  *
- * Tool contract: every tool returns its payload as a single text-content
- * JSON string. On error, `isError: true` with a human-readable message.
+ * Tool contract: every tool returns native structured content plus the same
+ * payload as a text JSON string for legacy clients. On error, `isError: true`
+ * includes both machine-readable and human-readable details.
  * Per the dev doc, we surface errors as tool responses rather than throwing
  * so agents can reason about them.
  */
@@ -23,13 +24,12 @@ import { dirname, resolve as pathResolve } from "path";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenvConfig({ path: pathResolve(__dirname, "../.env") });
 
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
+  Server,
+  type CallToolRequest,
   type Tool,
-} from "@modelcontextprotocol/sdk/types.js";
+} from "@modelcontextprotocol/server";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
 
 import { WclRateLimitError } from "./client.js";
 import { getRateLimit } from "./tools/getRateLimit.js";
@@ -51,8 +51,10 @@ import {
 import { getPlayerFightSummary } from "./tools/getPlayerFightSummary.js";
 import { rankDamageTakenByAbility } from "./tools/rankDamageTakenByAbility.js";
 import { runGraphQL } from "./tools/graphql.js";
+import { TOOL_OUTPUT_SCHEMAS } from "./outputSchemas.js";
+import { err, ok } from "./toolResult.js";
 
-const TOOLS: Tool[] = [
+const TOOL_DEFINITIONS: Tool[] = [
   {
     name: "wcl_get_rate_limit",
     description:
@@ -433,23 +435,35 @@ const TOOLS: Tool[] = [
   },
 ];
 
-const server = new Server(
-  {
-    name: "wcl-mcp-server",
-    version: "0.1.0",
-  },
-  {
-    capabilities: {
-      tools: {},
+const TOOLS: Tool[] = TOOL_DEFINITIONS.map((tool) => {
+  const outputSchema = TOOL_OUTPUT_SCHEMAS[tool.name];
+  if (!outputSchema) throw new Error(`Missing output schema for ${tool.name}`);
+  return { ...tool, outputSchema };
+});
+
+function createServer() {
+  const server = new Server(
+    {
+      name: "wcl-mcp-server",
+      version: "0.1.0",
     },
-  },
-);
+    {
+      capabilities: {
+        tools: {},
+      },
+    },
+  );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: TOOLS,
-}));
+  server.setRequestHandler("tools/list", async () => ({
+    tools: TOOLS,
+  }));
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler("tools/call", handleToolCall);
+
+  return server;
+}
+
+async function handleToolCall(request: CallToolRequest) {
   const { name, arguments: rawArgs } = request.params;
   const args = (rawArgs ?? {}) as Record<string, unknown>;
 
@@ -664,25 +678,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     return err(e instanceof Error ? e.message : String(e));
   }
-});
-
-function ok(data: unknown) {
-  return {
-    content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
-  };
-}
-
-function err(message: string, details?: Record<string, unknown>) {
-  // Default to the plaintext "Error: …" shape. When we have structured context
-  // (e.g. a rate-limit payload), emit JSON so callers can parse it alongside
-  // the message.
-  const text = details
-    ? JSON.stringify({ error: message, ...details }, null, 2)
-    : `Error: ${message}`;
-  return {
-    content: [{ type: "text" as const, text }],
-    isError: true,
-  };
 }
 
 // --- tiny arg validation helpers ---
@@ -812,13 +807,17 @@ function optionalEnum<T extends string>(
   return requireEnum(args, key, allowed);
 }
 
-async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+function main() {
+  serveStdio(createServer, {
+    legacy: "serve",
+    onerror: (error) => console.error("MCP server error:", error),
+  });
   console.error("wcl-mcp-server running on stdio");
 }
 
-main().catch((err) => {
+try {
+  main();
+} catch (err) {
   console.error("Fatal error starting wcl-mcp-server:", err);
   process.exit(1);
-});
+}
