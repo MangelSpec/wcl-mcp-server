@@ -130,8 +130,8 @@ After editing the config, restart the MCP client. Then you should see the `wcl_*
 
 For normal fight analysis, prefer this bounded sequence:
 
-1. `wcl_get_fights` to refresh and resolve the exact fight.
-2. `wcl_get_fight_overview` to fetch roster, scoreboards, deaths, interrupts, and dispels in parallel.
+1. `wcl_get_fights` to refresh and resolve the exact fight or fight set.
+2. `wcl_analyze_fight_set` for multi-pull totals, frequencies, and trends, or `wcl_get_fight_overview` for one exact fight.
 3. `wcl_get_fight_window_context` only when a narrow mechanic window needs correlated aura, cast, interrupt, damage, healing, or death events.
 
 The lower-level table and event tools remain available as focused escape hatches.
@@ -149,7 +149,14 @@ List fights in a report. This is almost always the **first** tool you call for a
 - Input: `{ reportCode, encounterID?, killType? }`
   - `reportCode` — the alphanumeric code from a WCL URL like `https://www.warcraftlogs.com/reports/<reportCode>`.
   - `killType` ∈ `"Encounters" | "Kills" | "Wipes" | "Trash"`. `Encounters` = all boss fights.
-- Output: `{ report: { title, startTime, endTime, ... }, fights: [{ id, encounterID, name, startTime, endTime, kill, size, difficulty, bossPercentage, ... }] }`.
+- Output: `{ report: { title, startTime, endTime, ... }, fights: [{ id, encounterID, name, startTime, endTime, kill, size, difficulty, bossPercentage, fightPercentage, lastPhase, lastPhaseAsAbsoluteIndex, lastPhaseIsIntermission, phaseTransitions, ... }] }`.
+
+### `wcl_analyze_fight_set`
+Fetch one to four aggregate table views across an explicit set of up to 50 fights in one GraphQL request. Use this for all-wipes, all-attempts, progression, frequency, and trend questions instead of looping over single-fight tools.
+- Input: `{ reportCode, fightIDs, views, abilityID?, sourceID?, targetID?, maxRows? }`.
+- `views` uses the same names as `wcl_get_table` and is capped at four so unrelated data is not fetched speculatively.
+- Output: `{ report, scope, filters, sections, payloadStability, caveats }`, where each compact section reports `totalRows` and `truncated`.
+- The selected fights include phase and progress metadata. Aggregate observations do not establish assignment, eligibility, cooldown readiness, or responsibility.
 
 ### `wcl_get_player_info`
 Fetch the actor roster for a report. Use this **once per report** to build a join table: WCL actor `id` ↔ in-game GUID ↔ character name ↔ class/spec/role. Spec is resolved across the whole report window; if a player swapped specs mid-run, the most-used spec wins.
@@ -192,7 +199,7 @@ Raw GraphQL escape hatch. Use this when the structured tools don't cover what yo
 
 ## Smoke test
 
-[scripts/smoke-test.mjs](scripts/smoke-test.mjs) spawns the compiled server, exercises the six core API tools against a known public report (`cqKLtMJC2abXhzNY`), and prints concise per-tool summaries. It hits the real API and burns ~15 rate-limit points. `npm test` runs offline protocol-contract tests for modern negotiation, legacy fallback, tool schemas, and structured errors.
+[scripts/smoke-test.mjs](scripts/smoke-test.mjs) spawns the compiled server, exercises the core API tools against a known public report (`cqKLtMJC2abXhzNY`), and prints concise per-tool summaries. It hits the real API and currently burns about 30 rate-limit points. `npm test` runs offline protocol-contract tests for modern negotiation, legacy fallback, tool schemas, and structured errors.
 
 ```bash
 npm run build

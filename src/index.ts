@@ -50,6 +50,12 @@ import {
 } from "./tools/getFightWindowContext.js";
 import { getPlayerFightSummary } from "./tools/getPlayerFightSummary.js";
 import { rankDamageTakenByAbility } from "./tools/rankDamageTakenByAbility.js";
+import {
+  analyzeFightSet,
+  MAX_FIGHT_SET_ROWS,
+  MAX_FIGHT_SET_SIZE,
+  MAX_FIGHT_SET_VIEWS,
+} from "./tools/analyzeFightSet.js";
 import { runGraphQL } from "./tools/graphql.js";
 import { TOOL_OUTPUT_SCHEMAS } from "./outputSchemas.js";
 import { err, ok } from "./toolResult.js";
@@ -108,6 +114,47 @@ const TOOL_DEFINITIONS: Tool[] = [
         },
       },
       required: ["reportCode"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wcl_analyze_fight_set",
+    description:
+      "Aggregate 1-4 WCL table views across 1-50 explicitly selected fights in one GraphQL request. Use for all-wipes, all-attempts, progression, frequency, trend, and multi-pull questions instead of calling single-fight table or overview tools repeatedly. Supports damage, healing, deaths, survivability, casts, buffs, debuffs, resources, summons, dispels, interrupts, threat, and summary views. Returns compact bounded sections and selected-fight phase/progress metadata; use event tools only when exact timelines or absence/eligibility reasoning cannot be established from aggregates.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reportCode: { type: "string" },
+        fightIDs: {
+          type: "array",
+          items: { type: "number" },
+          minItems: 1,
+          maxItems: MAX_FIGHT_SET_SIZE,
+          description: "Exact fight IDs selected from wcl_get_fights.",
+        },
+        views: {
+          type: "array",
+          items: { type: "string", enum: [...TABLE_VIEWS] },
+          minItems: 1,
+          maxItems: MAX_FIGHT_SET_VIEWS,
+          description:
+            "Only the table views needed for the question. Related views are fetched as aliases in one WCL request.",
+        },
+        abilityID: {
+          type: "number",
+          description: "Optional game ability ID applied to every requested view.",
+        },
+        sourceID: { type: "number" },
+        targetID: { type: "number" },
+        maxRows: {
+          type: "number",
+          default: 40,
+          minimum: 1,
+          maximum: MAX_FIGHT_SET_ROWS,
+          description: "Maximum compact rows returned per view.",
+        },
+      },
+      required: ["reportCode", "fightIDs", "views"],
       additionalProperties: false,
     },
   },
@@ -505,6 +552,35 @@ async function handleToolCall(request: CallToolRequest) {
         return ok(data);
       }
 
+      case "wcl_analyze_fight_set": {
+        const reportCode = requireString(args, "reportCode");
+        const fightIDs = requireNumberArray(
+          args,
+          "fightIDs",
+          MAX_FIGHT_SET_SIZE,
+        );
+        const views = requireEnumArray(args, "views", TABLE_VIEWS);
+        if (new Set(views).size > MAX_FIGHT_SET_VIEWS) {
+          throw new Error(
+            `Argument "views" must contain at most ${MAX_FIGHT_SET_VIEWS} unique values`,
+          );
+        }
+        const abilityID = optionalNumber(args, "abilityID");
+        const sourceID = optionalNumber(args, "sourceID");
+        const targetID = optionalNumber(args, "targetID");
+        const maxRows = optionalNumber(args, "maxRows");
+        const data = await analyzeFightSet({
+          reportCode,
+          fightIDs,
+          views,
+          abilityID,
+          sourceID,
+          targetID,
+          maxRows,
+        });
+        return ok(data);
+      }
+
       case "wcl_get_table": {
         const reportCode = requireString(args, "reportCode");
         const fightID = requireNumber(args, "fightID");
@@ -726,6 +802,23 @@ function requireStringArray(
       throw new Error(`${key} must contain only non-empty strings`);
     }
     return entry.trim();
+  });
+}
+
+function requireNumberArray(
+  args: Record<string, unknown>,
+  key: string,
+  maxItems: number,
+): number[] {
+  const value = args[key];
+  if (!Array.isArray(value) || value.length < 1 || value.length > maxItems) {
+    throw new Error(`${key} must contain 1 to ${maxItems} numbers`);
+  }
+  return value.map((entry) => {
+    if (!Number.isInteger(entry) || !Number.isSafeInteger(entry) || entry < 1) {
+      throw new Error(`${key} must contain only positive integers`);
+    }
+    return entry;
   });
 }
 

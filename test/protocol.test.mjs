@@ -29,7 +29,7 @@ for (const mode of ["auto", "legacy"]) {
     const client = await connect(mode);
     try {
       const { tools } = await client.listTools();
-      assert.equal(tools.length, 12);
+      assert.equal(tools.length, 13);
       assert.ok(tools.every((tool) => tool.outputSchema?.type === "object"));
       const playerSummary = tools.find(
         (tool) => tool.name === "wcl_get_player_fight_summary",
@@ -38,6 +38,11 @@ for (const mode of ["auto", "legacy"]) {
         playerSummary?.inputSchema.properties.includeRankings.default,
         true,
       );
+      const fightSet = tools.find(
+        (tool) => tool.name === "wcl_analyze_fight_set",
+      );
+      assert.equal(fightSet?.inputSchema.properties.fightIDs.maxItems, 50);
+      assert.equal(fightSet?.inputSchema.properties.views.maxItems, 4);
       assert.equal(
         client.getProtocolEra(),
         mode === "auto" ? "modern" : "legacy",

@@ -240,6 +240,29 @@ try {
     console.error("⚠  no specs were resolved — playerDetails shape may have drifted");
   }
 
+  // ---- wcl_analyze_fight_set ----
+  section(`wcl_analyze_fight_set — ${kills.length} kills`);
+  const fightSetResult = await callTool("wcl_analyze_fight_set", {
+    reportCode: TEST_REPORT_CODE,
+    fightIDs: kills.map((fight) => fight.id),
+    views: ["damage-done", "deaths"],
+    maxRows: 10,
+  });
+  console.error(
+    `fights: ${fightSetResult.scope.fightCount}, sections: ${fightSetResult.sections.length}`,
+  );
+  for (const aggregate of fightSetResult.sections) {
+    console.error(
+      `  ${aggregate.view}: ${aggregate.rows.length}/${aggregate.totalRows} rows${aggregate.truncated ? " (truncated)" : ""}`,
+    );
+  }
+  if (fightSetResult.scope.fightCount !== kills.length) {
+    throw new Error("fight-set result did not include every selected fight");
+  }
+  if (fightSetResult.sections.length !== 2) {
+    throw new Error("fight-set result did not include every requested view");
+  }
+
   // ---- wcl_get_table damage-done ----
   section(`wcl_get_table — damage-done, fight ${firstKill.id}`);
   const tableResult = await callTool("wcl_get_table", {
@@ -311,8 +334,8 @@ try {
   console.error(rlAfter);
   const pointsUsed = rlAfter.pointsSpentThisHour - rlBefore.pointsSpentThisHour;
   console.error(`\npoints used by smoke test: ${pointsUsed}`);
-  if (pointsUsed > 20) {
-    console.error(`⚠  point budget exceeded (expected <=20, used ${pointsUsed})`);
+  if (pointsUsed > 35) {
+    console.error(`⚠  point budget exceeded (expected <=35, used ${pointsUsed})`);
   }
 
   console.error("\n✅ Smoke test passed — core tools work end-to-end");

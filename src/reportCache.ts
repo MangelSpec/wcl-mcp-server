@@ -32,6 +32,11 @@ export interface Fight {
   size: number | null;
   difficulty: number | null;
   bossPercentage: number | null;
+  fightPercentage: number | null;
+  lastPhase: number | null;
+  lastPhaseAsAbsoluteIndex: number | null;
+  lastPhaseIsIntermission: boolean | null;
+  phaseTransitions: Array<{ id: number; startTime: number }> | null;
 }
 
 export interface ReportMeta {
@@ -76,6 +81,14 @@ const QUERY = /* GraphQL */ `
           size
           difficulty
           bossPercentage
+          fightPercentage
+          lastPhase
+          lastPhaseAsAbsoluteIndex
+          lastPhaseIsIntermission
+          phaseTransitions {
+            id
+            startTime
+          }
         }
       }
     }
