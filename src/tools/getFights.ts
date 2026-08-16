@@ -32,7 +32,7 @@ export interface GetFightsResult {
     fetchedAtEpochMs: number;
   };
   report: ReportMeta;
-  fights: Fight[];
+  fights: ReturnType<typeof presentFight>[];
 }
 
 export async function getFights(args: GetFightsArgs): Promise<GetFightsResult> {
@@ -69,6 +69,19 @@ export async function getFights(args: GetFightsArgs): Promise<GetFightsResult> {
       fetchedAtEpochMs: cached.fetchedAt,
     },
     report: cached.report,
-    fights,
+    fights: fights.map(presentFight),
+  };
+}
+
+export function presentFight(fight: Fight) {
+  return {
+    ...fight,
+    phaseTransitions:
+      fight.phaseTransitions?.map((transition) => ({
+        fightRelativeStartTime: transition.startTime - fight.startTime,
+        id: transition.id,
+        reportRelativeStartTime: transition.startTime,
+        startTime: transition.startTime - fight.startTime,
+      })) ?? null,
   };
 }

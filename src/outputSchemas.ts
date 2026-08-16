@@ -149,10 +149,17 @@ export const TOOL_OUTPUT_SCHEMAS: Record<
               items: {
                 additionalProperties: false,
                 properties: {
+                  fightRelativeStartTime: { type: "number" },
                   id: { type: "number" },
+                  reportRelativeStartTime: { type: "number" },
                   startTime: { type: "number" },
                 },
-                required: ["id", "startTime"],
+                required: [
+                  "fightRelativeStartTime",
+                  "id",
+                  "reportRelativeStartTime",
+                  "startTime",
+                ],
                 type: "object",
               },
             },

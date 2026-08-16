@@ -5,6 +5,7 @@ import {
   buildFightSetQuery,
   normalizeFightSetTable,
 } from "../dist/tools/analyzeFightSet.js";
+import { presentFight } from "../dist/tools/getFights.js";
 
 test("builds one query containing only requested fight-set views", () => {
   const query = buildFightSetQuery(["deaths", "interrupts"]);
@@ -62,6 +63,24 @@ test("normalizes aggregate row timestamps against their source fight", () => {
       reportRelativeDeathTime: 207_000,
       fight: 12,
       name: "Beta",
+    },
+  ]);
+});
+
+test("presents phase transitions in fight-relative time", () => {
+  const fight = presentFight({
+    id: 11,
+    startTime: 100_000,
+    endTime: 130_000,
+    phaseTransitions: [{ id: 2, startTime: 112_500 }],
+  });
+
+  assert.deepEqual(fight.phaseTransitions, [
+    {
+      fightRelativeStartTime: 12_500,
+      id: 2,
+      reportRelativeStartTime: 112_500,
+      startTime: 12_500,
     },
   ]);
 });

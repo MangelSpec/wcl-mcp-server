@@ -2,6 +2,7 @@ import { executeAndUnwrap } from "../client.js";
 import { addFightRelativeTimes } from "../fightTime.js";
 import { getCachedReport, type Fight } from "../reportCache.js";
 import { compactTable } from "./getFightOverview.js";
+import { presentFight } from "./getFights.js";
 import {
   type TableView,
   VIEW_TO_DATA_TYPE,
@@ -165,6 +166,7 @@ export function normalizeFightSetTable(
 }
 
 function compactFight(fight: Fight) {
+  const presented = presentFight(fight);
   return {
     bossPercentage: fight.bossPercentage,
     difficulty: fight.difficulty,
@@ -177,7 +179,7 @@ function compactFight(fight: Fight) {
     lastPhaseAsAbsoluteIndex: fight.lastPhaseAsAbsoluteIndex,
     lastPhaseIsIntermission: fight.lastPhaseIsIntermission,
     name: fight.name,
-    phaseTransitions: fight.phaseTransitions,
+    phaseTransitions: presented.phaseTransitions,
   };
 }
 
