@@ -1,8 +1,10 @@
 import { executeAndUnwrap } from "../client.js";
+import { loadEvidence } from "../evidenceCache.js";
 
 export interface GetFightContextArgs {
   fightID: number;
   includeCombatantInfo?: boolean;
+  refresh?: boolean;
   reportCode: string;
 }
 
@@ -91,58 +93,77 @@ interface QueryResult {
 }
 
 export async function getFightContext(args: GetFightContextArgs) {
-  const data = await executeAndUnwrap<QueryResult>(QUERY, {
-    code: args.reportCode,
-    fightIDs: [args.fightID],
-    includeCombatantInfo: args.includeCombatantInfo ?? false,
-  });
-  const report = data.reportData.report;
-  if (!report) throw new Error(`WCL report not found: ${args.reportCode}`);
-  const fight = report.fights[0];
-  if (!fight)
-    throw new Error(
-      `Fight ${args.fightID} not found in report ${args.reportCode}`,
-    );
-  const actors = new Map(
-    (report.masterData?.actors ?? []).map((actor) => [actor.id, actor]),
-  );
-  const combatants = extractCombatants(report.playerDetails);
-  const players = (fight.friendlyPlayers ?? []).map((actorID, index) => {
-    const actor = actors.get(actorID);
-    const combatant = combatants.get(actorID);
-    return {
-      actorID,
-      className: actor?.subType ?? null,
-      gameID: actor?.gameID ?? null,
-      itemLevel: fight.friendlyItemLevels?.[index] ?? null,
-      name: actor?.name ?? null,
-      server: actor?.server ?? null,
-      specName: fight.friendlySpecs?.[index] ?? null,
-      ...(args.includeCombatantInfo
-        ? {
-            combatantInfo: combatant
-              ? {
-                  healthstoneUse: finiteNumber(combatant.healthstoneUse),
-                  potionUse: finiteNumber(combatant.potionUse),
-                  talentNodeIDs: extractTalentNodeIDs(combatant.combatantInfo),
-                }
-              : null,
-          }
-        : {}),
-    };
-  });
-
-  return {
-    report: { code: report.code, title: report.title },
-    fight: {
-      ...fight,
-      durationMs: fight.endTime - fight.startTime,
-      url: `https://www.warcraftlogs.com/reports/${report.code}#fight=${fight.id}`,
+  const includeCombatantInfo = args.includeCombatantInfo ?? false;
+  return loadEvidence({
+    key: {
+      fightID: args.fightID,
+      includeCombatantInfo,
+      operation: "context",
+      reportCode: args.reportCode,
     },
-    players,
-    composition: summarizeComposition(players),
-    combatantInfoIncluded: args.includeCombatantInfo ?? false,
-  };
+    operation: "context",
+    refresh: args.refresh,
+    loader: async (signal, observeUpstream) => {
+      const data = await executeAndUnwrap<QueryResult>(
+        QUERY,
+        {
+          code: args.reportCode,
+          fightIDs: [args.fightID],
+          includeCombatantInfo,
+        },
+        { onResponse: observeUpstream, signal },
+      );
+      const report = data.reportData.report;
+      if (!report) throw new Error(`WCL report not found: ${args.reportCode}`);
+      const fight = report.fights[0];
+      if (!fight)
+        throw new Error(
+          `Fight ${args.fightID} not found in report ${args.reportCode}`,
+        );
+      const actors = new Map(
+        (report.masterData?.actors ?? []).map((actor) => [actor.id, actor]),
+      );
+      const combatants = extractCombatants(report.playerDetails);
+      const players = (fight.friendlyPlayers ?? []).map((actorID, index) => {
+        const actor = actors.get(actorID);
+        const combatant = combatants.get(actorID);
+        return {
+          actorID,
+          className: actor?.subType ?? null,
+          gameID: actor?.gameID ?? null,
+          itemLevel: fight.friendlyItemLevels?.[index] ?? null,
+          name: actor?.name ?? null,
+          server: actor?.server ?? null,
+          specName: fight.friendlySpecs?.[index] ?? null,
+          ...(includeCombatantInfo
+            ? {
+                combatantInfo: combatant
+                  ? {
+                      healthstoneUse: finiteNumber(combatant.healthstoneUse),
+                      potionUse: finiteNumber(combatant.potionUse),
+                      talentNodeIDs: extractTalentNodeIDs(
+                        combatant.combatantInfo,
+                      ),
+                    }
+                  : null,
+              }
+            : {}),
+        };
+      });
+
+      return {
+        report: { code: report.code, title: report.title },
+        fight: {
+          ...fight,
+          durationMs: fight.endTime - fight.startTime,
+          url: `https://www.warcraftlogs.com/reports/${report.code}#fight=${fight.id}`,
+        },
+        players,
+        composition: summarizeComposition(players),
+        combatantInfoIncluded: includeCombatantInfo,
+      };
+    },
+  });
 }
 
 function extractCombatants(

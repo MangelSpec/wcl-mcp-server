@@ -81,6 +81,10 @@ export function getLastRateLimit(): RateLimitData | null {
 interface ExecuteOptions {
   /** Internal — used to prevent infinite 401 retry loops. */
   _retriedOn401?: boolean;
+  /** Internal cancellation for shared structured evidence loads. */
+  signal?: AbortSignal;
+  /** Internal metrics sink for structured evidence cache telemetry. */
+  onResponse?: (metrics: { decodedBytes: number; durationMs: number }) => void;
 }
 
 export async function executeGraphQL<T = unknown>(
@@ -95,9 +99,18 @@ export async function executeGraphQL<T = unknown>(
   );
 
   const controller = new AbortController();
-  const timeoutHandle = setTimeout(() => controller.abort(), requestTimeoutMs);
+  const requestStartedAt = performance.now();
+  let timedOut = false;
+  let res: Response | undefined;
+  const timeoutHandle = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, requestTimeoutMs);
+  const abortFromCaller = () => controller.abort(options.signal?.reason);
+  if (options.signal?.aborted) abortFromCaller();
+  else
+    options.signal?.addEventListener("abort", abortFromCaller, { once: true });
 
-  let res: Response;
   try {
     res = await fetch(endpoint, {
       method: "POST",
@@ -109,68 +122,121 @@ export async function executeGraphQL<T = unknown>(
       body: JSON.stringify({ query, variables: variables ?? {} }),
       signal: controller.signal,
     });
+    // 401 — token rejected. Invalidate and retry once. In user mode the retry
+    // also forces a refresh-token round trip, which is what recovers a token that
+    // WCL expired earlier than its stated `expires_in`.
+    if (res.status === 401 && !options._retriedOn401) {
+      await res.body?.cancel();
+      invalidateToken();
+      return executeGraphQL<T>(query, variables, {
+        _retriedOn401: true,
+        onResponse: options.onResponse,
+        signal: options.signal,
+      });
+    }
+
+    // A 401 that survives the retry means the credential itself is bad, not stale.
+    if (res.status === 401) {
+      throw new Error(
+        mode === "user"
+          ? "WCL rejected your user token (HTTP 401) even after refreshing. " +
+              "Re-run `npm run auth` to re-authorize."
+          : "WCL rejected the client credentials (HTTP 401). Check WCL_CLIENT_ID / " +
+              "WCL_CLIENT_SECRET in .env.",
+      );
+    }
+
+    // 429 — rate limited. Try to surface the reset interval if we have one cached.
+    if (res.status === 429) {
+      throw new WclRateLimitError(
+        `WCL rate limit exceeded (HTTP 429).${
+          lastRateLimit
+            ? ` Points resets in ~${lastRateLimit.pointsResetIn}s.`
+            : " Try wcl_get_rate_limit to see when points reset."
+        }`,
+        lastRateLimit,
+      );
+    }
+
+    const responseText = await readResponseText(res, controller.signal);
+    if (!res.ok) {
+      throw new Error(
+        `WCL GraphQL HTTP error: ${res.status} ${res.statusText}${
+          responseText ? ` — ${truncateUpstreamBody(responseText)}` : ""
+        }`,
+      );
+    }
+
+    const body = JSON.parse(responseText) as GraphQLResponse<T>;
+    options.onResponse?.({
+      decodedBytes: Buffer.byteLength(responseText),
+      durationMs: Math.max(0, performance.now() - requestStartedAt),
+    });
+
+    // Opportunistically scrape rateLimitData from any response shape that happens
+    // to include it at the root of `data`. Structured tools append it to their
+    // queries deliberately; wcl_graphql does not. Either way, if it's here, we use it.
+    if (body.data && typeof body.data === "object") {
+      const maybeRl = (body.data as Record<string, unknown>).rateLimitData;
+      if (isRateLimitData(maybeRl)) {
+        lastRateLimit = maybeRl;
+      }
+    }
+
+    return body;
   } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
-      throw new Error(`WCL GraphQL request timed out after ${requestTimeoutMs}ms`);
+    if (controller.signal.aborted || isAbortError(err)) {
+      if (!timedOut && options.signal?.aborted) {
+        throw options.signal.reason instanceof Error
+          ? options.signal.reason
+          : new DOMException("The operation was aborted", "AbortError");
+      }
+      throw new Error(
+        `WCL GraphQL request timed out after ${requestTimeoutMs}ms`,
+      );
     }
     throw err;
   } finally {
     clearTimeout(timeoutHandle);
+    options.signal?.removeEventListener("abort", abortFromCaller);
+    if (res && !res.bodyUsed) await res.body?.cancel().catch(() => undefined);
   }
+}
 
-  // 401 — token rejected. Invalidate and retry once. In user mode the retry
-  // also forces a refresh-token round trip, which is what recovers a token that
-  // WCL expired earlier than its stated `expires_in`.
-  if (res.status === 401 && !options._retriedOn401) {
-    invalidateToken();
-    return executeGraphQL<T>(query, variables, { _retriedOn401: true });
-  }
+async function readResponseText(
+  response: Response,
+  signal: AbortSignal,
+): Promise<string> {
+  if (!response.body) return response.text();
 
-  // A 401 that survives the retry means the credential itself is bad, not stale.
-  if (res.status === 401) {
-    throw new Error(
-      mode === "user"
-        ? "WCL rejected your user token (HTTP 401) even after refreshing. " +
-          "Re-run `npm run auth` to re-authorize."
-        : "WCL rejected the client credentials (HTTP 401). Check WCL_CLIENT_ID / " +
-          "WCL_CLIENT_SECRET in .env.",
-    );
-  }
-
-  // 429 — rate limited. Try to surface the reset interval if we have one cached.
-  if (res.status === 429) {
-    throw new WclRateLimitError(
-      `WCL rate limit exceeded (HTTP 429).${
-        lastRateLimit
-          ? ` Points resets in ~${lastRateLimit.pointsResetIn}s.`
-          : " Try wcl_get_rate_limit to see when points reset."
-      }`,
-      lastRateLimit,
-    );
-  }
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(
-      `WCL GraphQL HTTP error: ${res.status} ${res.statusText}${
-        text ? ` — ${truncateUpstreamBody(text)}` : ""
-      }`,
-    );
-  }
-
-  const body = (await res.json()) as GraphQLResponse<T>;
-
-  // Opportunistically scrape rateLimitData from any response shape that happens
-  // to include it at the root of `data`. Structured tools append it to their
-  // queries deliberately; wcl_graphql does not. Either way, if it's here, we use it.
-  if (body.data && typeof body.data === "object") {
-    const maybeRl = (body.data as Record<string, unknown>).rateLimitData;
-    if (isRateLimitData(maybeRl)) {
-      lastRateLimit = maybeRl;
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  const abortRead = () =>
+    void reader.cancel(signal.reason).catch(() => undefined);
+  if (signal.aborted) abortRead();
+  else signal.addEventListener("abort", abortRead, { once: true });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
     }
+    if (signal.aborted) throw abortError(signal.reason);
+    return Buffer.concat(chunks).toString("utf8");
+  } finally {
+    signal.removeEventListener("abort", abortRead);
+    reader.releaseLock();
   }
+}
 
-  return body;
+function abortError(reason: unknown): Error {
+  return reason instanceof Error
+    ? reason
+    : new DOMException("The operation was aborted", "AbortError");
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
 }
 
 /**
@@ -208,8 +274,9 @@ function isRateLimitData(value: unknown): value is RateLimitData {
 export async function executeAndUnwrap<T>(
   query: string,
   variables?: Record<string, unknown>,
+  options: Pick<ExecuteOptions, "onResponse" | "signal"> = {},
 ): Promise<T> {
-  const res = await executeGraphQL<T>(query, variables);
+  const res = await executeGraphQL<T>(query, variables, options);
   if (res.errors?.length) {
     const msg = res.errors.map((e) => e.message).join("; ");
     throw new Error(`WCL GraphQL errors: ${msg}`);

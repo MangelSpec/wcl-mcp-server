@@ -32,6 +32,7 @@ import {
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 
 import { WclRateLimitError } from "./client.js";
+import { withEvidenceTelemetry } from "./evidenceCache.js";
 import { getRateLimit } from "./tools/getRateLimit.js";
 import { getFights } from "./tools/getFights.js";
 import { getPlayerInfo } from "./tools/getPlayerInfo.js";
@@ -142,7 +143,8 @@ const TOOL_DEFINITIONS: Tool[] = [
         },
         abilityID: {
           type: "number",
-          description: "Optional game ability ID applied to every requested view.",
+          description:
+            "Optional game ability ID applied to every requested view.",
         },
         sourceID: { type: "number" },
         targetID: { type: "number" },
@@ -223,6 +225,11 @@ const TOOL_DEFINITIONS: Tool[] = [
           type: "number",
           description: "Optional: filter to a single ability (game spell ID).",
         },
+        refresh: {
+          type: "boolean",
+          default: false,
+          description: "Bypass completed evidence caching for this table load.",
+        },
       },
       required: ["reportCode", "fightID", "view"],
       additionalProperties: false,
@@ -295,6 +302,11 @@ const TOOL_DEFINITIONS: Tool[] = [
           description:
             "Max pages to auto-paginate through before signalling truncation. Default 3.",
         },
+        refresh: {
+          type: "boolean",
+          default: false,
+          description: "Bypass completed evidence caching for this event load.",
+        },
       },
       required: ["reportCode", "fightID", "dataType"],
       additionalProperties: false,
@@ -346,6 +358,12 @@ const TOOL_DEFINITIONS: Tool[] = [
         reportCode: { type: "string" },
         fightID: { type: "number" },
         includeCombatantInfo: { type: "boolean", default: false },
+        refresh: {
+          type: "boolean",
+          default: false,
+          description:
+            "Bypass completed evidence caching for this context load.",
+        },
       },
       required: ["reportCode", "fightID"],
       additionalProperties: false,
@@ -388,6 +406,12 @@ const TOOL_DEFINITIONS: Tool[] = [
         reportCode: { type: "string" },
         fightID: { type: "number" },
         topActors: { type: "number", default: 10 },
+        refresh: {
+          type: "boolean",
+          default: false,
+          description:
+            "Refresh every context and table primitive in this bundle.",
+        },
       },
       required: ["reportCode", "fightID"],
       additionalProperties: false,
@@ -452,6 +476,12 @@ const TOOL_DEFINITIONS: Tool[] = [
           description:
             "Include pets and NPC actors in addition to fight-roster players.",
         },
+        refresh: {
+          type: "boolean",
+          default: false,
+          description:
+            "Refresh context and event primitives used by this analysis.",
+        },
       },
       required: ["reportCode", "fightID", "abilityNames"],
       additionalProperties: false,
@@ -488,10 +518,31 @@ const TOOL_DEFINITIONS: Tool[] = [
   },
 ];
 
+const READ_ONLY_TOOL_NAMES = new Set([
+  "wcl_get_rate_limit",
+  "wcl_get_fights",
+  "wcl_analyze_fight_set",
+  "wcl_get_player_info",
+  "wcl_get_table",
+  "wcl_get_events",
+  "wcl_find_peer_parses",
+  "wcl_get_fight_context",
+  "wcl_get_player_fight_summary",
+  "wcl_get_fight_overview",
+  "wcl_get_fight_window_context",
+  "wcl_rank_damage_taken_by_ability",
+]);
+
 const TOOLS: Tool[] = TOOL_DEFINITIONS.map((tool) => {
   const outputSchema = TOOL_OUTPUT_SCHEMAS[tool.name];
   if (!outputSchema) throw new Error(`Missing output schema for ${tool.name}`);
-  return { ...tool, outputSchema };
+  return {
+    ...tool,
+    ...(READ_ONLY_TOOL_NAMES.has(tool.name)
+      ? { annotations: { destructiveHint: false, readOnlyHint: true } }
+      : {}),
+    outputSchema,
+  };
 });
 
 function createServer() {
@@ -511,7 +562,9 @@ function createServer() {
     tools: TOOLS,
   }));
 
-  server.setRequestHandler("tools/call", handleToolCall);
+  server.setRequestHandler("tools/call", (request) =>
+    withEvidenceTelemetry(() => handleToolCall(request)),
+  );
 
   return server;
 }
@@ -588,6 +641,7 @@ async function handleToolCall(request: CallToolRequest) {
         const sourceID = optionalNumber(args, "sourceID");
         const targetID = optionalNumber(args, "targetID");
         const abilityID = optionalNumber(args, "abilityID");
+        const refresh = optionalBoolean(args, "refresh");
         const data = await getTable({
           reportCode,
           fightID,
@@ -595,6 +649,7 @@ async function handleToolCall(request: CallToolRequest) {
           sourceID,
           targetID,
           abilityID,
+          refresh,
         });
         return ok(data);
       }
@@ -610,6 +665,7 @@ async function handleToolCall(request: CallToolRequest) {
         const startTime = optionalNumber(args, "startTime");
         const endTime = optionalNumber(args, "endTime");
         const maxPages = optionalNumber(args, "maxPages");
+        const refresh = optionalBoolean(args, "refresh");
         const data = await getEvents({
           reportCode,
           fightID,
@@ -621,6 +677,7 @@ async function handleToolCall(request: CallToolRequest) {
           startTime,
           endTime,
           maxPages,
+          refresh,
         });
         return ok(data);
       }
@@ -669,10 +726,12 @@ async function handleToolCall(request: CallToolRequest) {
           args,
           "includeCombatantInfo",
         );
+        const refresh = optionalBoolean(args, "refresh");
         const data = await getFightContext({
           reportCode,
           fightID,
           includeCombatantInfo,
+          refresh,
         });
         return ok(data);
       }
@@ -681,7 +740,13 @@ async function handleToolCall(request: CallToolRequest) {
         const reportCode = requireString(args, "reportCode");
         const fightID = requireNumber(args, "fightID");
         const topActors = optionalNumber(args, "topActors");
-        const data = await getFightOverview({ reportCode, fightID, topActors });
+        const refresh = optionalBoolean(args, "refresh");
+        const data = await getFightOverview({
+          reportCode,
+          fightID,
+          topActors,
+          refresh,
+        });
         return ok(data);
       }
 
@@ -718,11 +783,13 @@ async function handleToolCall(request: CallToolRequest) {
         const fightID = requireNumber(args, "fightID");
         const abilityNames = requireStringArray(args, "abilityNames", 10);
         const includeNonPlayers = optionalBoolean(args, "includeNonPlayers");
+        const refresh = optionalBoolean(args, "refresh");
         const data = await rankDamageTakenByAbility({
           reportCode,
           fightID,
           abilityNames,
           includeNonPlayers,
+          refresh,
         });
         return ok(data);
       }

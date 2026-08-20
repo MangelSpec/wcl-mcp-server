@@ -3,6 +3,7 @@ import { getTable, type TableView } from "./getTable.js";
 
 export interface GetFightOverviewArgs {
   fightID: number;
+  refresh?: boolean;
   reportCode: string;
   topActors?: number;
 }
@@ -22,10 +23,16 @@ export async function getFightOverview(args: GetFightOverviewArgs) {
     getFightContext({
       fightID: args.fightID,
       includeCombatantInfo: false,
+      refresh: args.refresh,
       reportCode: args.reportCode,
     }),
     ...OVERVIEW_VIEWS.map((view) =>
-      getTable({ fightID: args.fightID, reportCode: args.reportCode, view }),
+      getTable({
+        fightID: args.fightID,
+        refresh: args.refresh,
+        reportCode: args.reportCode,
+        view,
+      }),
     ),
   ]);
 

@@ -107,6 +107,8 @@ Credentials are read from the [.env](.env) file at repo root via `dotenv`, which
 
 Individual Warcraft Logs GraphQL requests time out after 60 seconds by default. Set `WCL_REQUEST_TIMEOUT_MS` between `5000` and `180000` when the deployment needs a different bounded request budget.
 
+Structured fight context, table, and event evidence is cached in-process with single-flight request coalescing. The cache is fixed at 128 completed entries, 32 MiB total retained bytes, 4 MiB per entry, and 32 distinct in-flight keys. Context and table entries expire after 60 seconds; event entries expire after 30 seconds. Expired data is never served. `refresh: true` removes a completed entry and joins any active load for the same resolved resource. Raw GraphQL, authentication, rate-limit snapshots, GraphQL errors, partial GraphQL responses with errors, and the existing report metadata cache are excluded.
+
 ```json
 {
   "mcpServers": {
@@ -165,18 +167,19 @@ Fetch the actor roster for a report. Use this **once per report** to build a joi
 
 ### `wcl_get_table`
 The workhorse summary tool — same aggregated data the WCL website shows (damage done, healing, deaths, etc.). The response shape is WCL's untyped JSON blob and **varies per view**, so treat it as dynamic.
-- Input: `{ reportCode, fightID, view, sourceID?, targetID?, abilityID? }`
+- Input: `{ reportCode, fightID, view, sourceID?, targetID?, abilityID?, refresh? }`
   - `view` — canonical views include `"damage-done"`, `"damage-taken"`, `"healing"`, `"deaths"`, `"casts"`, `"buffs"`, `"debuffs"`, `"summons"`, `"resources"`, `"interrupts"`, `"dispels"`, `"threat"`. Check [src/tools/getTable.ts](src/tools/getTable.ts) for the authoritative `TABLE_VIEWS` list.
 - Output: `{ reportCode, fightID, view, startTime, endTime, fightDuration, table: <WCL's raw JSON> }`.
 - Pattern: get `fightID` from `wcl_get_fights` first, then call this.
 
 ### `wcl_get_events`
 Raw combat log events with filtering. Auto-paginates up to `maxPages` (default 3) to protect rate-limit budget.
-- Input: `{ reportCode, fightID, dataType, sourceID?, targetID?, abilityID?, limit?, startTime?, endTime?, maxPages? }`
+- Input: `{ reportCode, fightID, dataType, sourceID?, targetID?, abilityID?, limit?, startTime?, endTime?, maxPages?, refresh? }`
   - `dataType` — one of `"DamageDone" | "DamageTaken" | "Healing" | "Casts" | "Buffs" | "Debuffs" | "Deaths" | "Dispels" | "Summons" | "Resources" | "Threat" | "Interrupts" | "CombatantInfo" | "All"`. See `EVENT_DATA_TYPES` in [src/tools/getEvents.ts](src/tools/getEvents.ts).
   - `limit` — max events per page (default 10000).
 - Output: `{ events: [...], pagesReturned, truncated, nextPageTimestamp? }`.
 - **Pagination contract:** if `truncated: true`, more data remains. Pass the returned `nextPageTimestamp` back as `startTime` on a follow-up call to continue. If `truncated: false`, `nextPageTimestamp` is omitted and you have everything.
+- `refresh` defaults to `false`. Set it only for an explicit refresh request; composite overview and named-ability damage analysis propagate it to every context/table/event primitive they load.
 
 ### `wcl_graphql`
 Raw GraphQL escape hatch. Use this when the structured tools don't cover what you need, or for schema introspection. **Does not auto-inject `rateLimitData`** — call `wcl_get_rate_limit` separately or add `rateLimitData { limitPerHour pointsSpentThisHour pointsResetIn }` to your own query.
@@ -193,7 +196,7 @@ Raw GraphQL escape hatch. Use this when the structured tools don't cover what yo
 - **Report visibility depends on auth mode.** In the default client-credentials mode only public and unlisted reports resolve; a private report is indistinguishable from a nonexistent one. `wcl_get_rate_limit` reports the current `authMode`.
 - **Rate limit budget is per-hour, per-client** (per-*user* once authorized for private access). `wcl_get_events` with `maxPages > 3` or `All` dataType will burn points fast. Check `wcl_get_rate_limit` before and after batch work. On a 429, the server returns a structured error with `kind: "rate_limit"` and a `rateLimit` payload containing reset timing.
 - **Error shape:** routine failures come back as `isError: true` with a text message. Rate-limit errors come back as `isError: true` with a JSON body (`{ error, kind: "rate_limit", rateLimit: {...} }`). Parse accordingly.
-- **Report caching:** per-report metadata is cached in-process by [src/reportCache.ts](src/reportCache.ts). Repeated calls against the same `reportCode` within one server lifetime are cheap.
+- **Report caching:** per-report metadata is cached in-process by [src/reportCache.ts](src/reportCache.ts). Separately, [src/evidenceCache.ts](src/evidenceCache.ts) caches only successful complete context/table/event results under resolved fight IDs, effective filters, time bounds, pagination, cursor, and combatant options. Repeated matching calls within their strict TTL are cheap.
 
 ---
 
@@ -230,6 +233,7 @@ src/
   tokenStore.ts     — 0600 on-disk persistence for the user token
   client.ts         — GraphQL transport, endpoint routing, error normalization, rate-limit parsing
   reportCache.ts    — per-report metadata cache
+  evidenceCache.ts  — bounded context/table/event evidence cache
   tools/
     getRateLimit.ts
     getFights.ts

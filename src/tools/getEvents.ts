@@ -29,6 +29,7 @@
  */
 
 import { executeAndUnwrap } from "../client.js";
+import { loadEvidence } from "../evidenceCache.js";
 import {
   addFightRelativeTimes,
   resolveFightRelativeWindow,
@@ -74,6 +75,7 @@ export interface GetEventsArgs {
   endTime?: number;
   /** Max auto-pagination pages before signalling truncation. Default 3. */
   maxPages?: number;
+  refresh?: boolean;
 }
 
 export interface GetEventsResult {
@@ -166,87 +168,102 @@ export async function getEvents(args: GetEventsArgs): Promise<GetEventsResult> {
 
   const limit = args.limit ?? DEFAULT_LIMIT;
 
-  const allEvents: unknown[] = [];
-  let cursor = window.reportRelativeStartTime;
-  let pagesReturned = 0;
-  let nextPageTimestamp: number | null = null;
-
-  for (let i = 0; i < maxPages; i++) {
-    const variables: Record<string, unknown> = {
-      code: args.reportCode,
-      startTime: cursor,
-      endTime: window.reportRelativeEndTime,
+  return loadEvidence({
+    key: {
+      abilityID: args.abilityID ?? null,
       dataType: args.dataType,
+      endTime: window.endTime,
+      fightID: args.fightID,
       limit,
-    };
-    if (args.sourceID !== undefined) variables.sourceID = args.sourceID;
-    if (args.targetID !== undefined) variables.targetID = args.targetID;
-    if (args.abilityID !== undefined) variables.abilityID = args.abilityID;
+      maxPages,
+      operation: "events",
+      reportCode: args.reportCode,
+      sourceID: args.sourceID ?? null,
+      startTime: window.startTime,
+      targetID: args.targetID ?? null,
+    },
+    operation: "events",
+    refresh: args.refresh,
+    loader: async (signal, observeUpstream) => {
+      const allEvents: unknown[] = [];
+      let cursor = window.reportRelativeStartTime;
+      let pagesReturned = 0;
+      let nextPageTimestamp: number | null = null;
 
-    const data = await executeAndUnwrap<QueryResult>(QUERY, variables);
-    const report = data.reportData.report;
-    if (!report) {
-      throw new Error(`WCL report not found: ${args.reportCode}`);
-    }
-    const events = report.events;
-    pagesReturned++;
+      for (let i = 0; i < maxPages; i++) {
+        const variables: Record<string, unknown> = {
+          code: args.reportCode,
+          startTime: cursor,
+          endTime: window.reportRelativeEndTime,
+          dataType: args.dataType,
+          limit,
+        };
+        if (args.sourceID !== undefined) variables.sourceID = args.sourceID;
+        if (args.targetID !== undefined) variables.targetID = args.targetID;
+        if (args.abilityID !== undefined) variables.abilityID = args.abilityID;
 
-    if (!events) {
-      // Null events object — treat as no data this page and stop.
-      nextPageTimestamp = null;
-      break;
-    }
+        const data = await executeAndUnwrap<QueryResult>(QUERY, variables, {
+          onResponse: observeUpstream,
+          signal,
+        });
+        const report = data.reportData.report;
+        if (!report) {
+          throw new Error(`WCL report not found: ${args.reportCode}`);
+        }
+        const events = report.events;
+        pagesReturned++;
 
-    if (Array.isArray(events.data)) {
-      allEvents.push(
-        ...events.data.map((event) =>
-          addFightRelativeTimes(event, fightStart, fightEnd),
-        ),
-      );
-    } else if (events.data != null) {
-      // Defensive: WCL may occasionally return a non-array shape for exotic
-      // dataTypes. Push the raw value so nothing is silently lost.
-      allEvents.push(addFightRelativeTimes(events.data, fightStart, fightEnd));
-    }
+        if (!events) {
+          nextPageTimestamp = null;
+          break;
+        }
 
-    nextPageTimestamp = events.nextPageTimestamp;
-    if (nextPageTimestamp == null) break;
+        if (Array.isArray(events.data)) {
+          allEvents.push(
+            ...events.data.map((event) =>
+              addFightRelativeTimes(event, fightStart, fightEnd),
+            ),
+          );
+        } else if (events.data != null) {
+          allEvents.push(
+            addFightRelativeTimes(events.data, fightStart, fightEnd),
+          );
+        }
 
-    // Guard against a pathological cursor that doesn't advance. If we
-    // surfaced this as truncated:true with the non-advancing cursor, the
-    // caller would loop forever — calling again with the same startTime
-    // would land in the same state. Treat it as drained instead and log
-    // to stderr so the smoke test surfaces the drift.
-    if (nextPageTimestamp <= cursor) {
-      console.error(
-        `wcl_get_events: WCL returned non-advancing nextPageTimestamp ` +
-          `(${nextPageTimestamp} <= cursor ${cursor}) on page ${pagesReturned} ` +
-          `for report=${args.reportCode} fight=${args.fightID} dataType=${args.dataType}. ` +
-          `Treating as drained to avoid a caller retry loop.`,
-      );
-      nextPageTimestamp = null;
-      break;
-    }
-    cursor = nextPageTimestamp;
-  }
+        nextPageTimestamp = events.nextPageTimestamp;
+        if (nextPageTimestamp == null) break;
 
-  const truncated = nextPageTimestamp != null;
+        if (nextPageTimestamp <= cursor) {
+          console.error(
+            `wcl_get_events: WCL returned non-advancing nextPageTimestamp ` +
+              `(${nextPageTimestamp} <= cursor ${cursor}) on page ${pagesReturned} ` +
+              `for report=${args.reportCode} fight=${args.fightID} dataType=${args.dataType}. ` +
+              `Treating as drained to avoid a caller retry loop.`,
+          );
+          nextPageTimestamp = null;
+          break;
+        }
+        cursor = nextPageTimestamp;
+      }
 
-  const result: GetEventsResult = {
-    reportCode: args.reportCode,
-    fightID: args.fightID,
-    dataType: args.dataType,
-    startTime: window.startTime,
-    endTime: window.endTime,
-    fightStartTime: fightStart,
-    fightEndTime: fightEnd,
-    fightDuration: fightEnd - fightStart,
-    events: allEvents,
-    pagesReturned,
-    truncated,
-  };
-  if (truncated && nextPageTimestamp != null) {
-    result.nextPageTimestamp = nextPageTimestamp - fightStart;
-  }
-  return result;
+      const truncated = nextPageTimestamp != null;
+      const result: GetEventsResult = {
+        reportCode: args.reportCode,
+        fightID: args.fightID,
+        dataType: args.dataType,
+        startTime: window.startTime,
+        endTime: window.endTime,
+        fightStartTime: fightStart,
+        fightEndTime: fightEnd,
+        fightDuration: fightEnd - fightStart,
+        events: allEvents,
+        pagesReturned,
+        truncated,
+      };
+      if (truncated && nextPageTimestamp != null) {
+        result.nextPageTimestamp = nextPageTimestamp - fightStart;
+      }
+      return result;
+    },
+  });
 }

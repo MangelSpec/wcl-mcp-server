@@ -15,6 +15,7 @@
  */
 
 import { executeAndUnwrap } from "../client.js";
+import { loadEvidence } from "../evidenceCache.js";
 import { addFightRelativeTimes } from "../fightTime.js";
 import { resolveFightBounds } from "../reportCache.js";
 
@@ -60,6 +61,7 @@ export interface GetTableArgs {
   sourceID?: number;
   targetID?: number;
   abilityID?: number;
+  refresh?: boolean;
 }
 
 export interface GetTableResult {
@@ -121,32 +123,52 @@ export async function getTable(args: GetTableArgs): Promise<GetTableResult> {
     args.fightID,
   );
 
-  const variables: Record<string, unknown> = {
-    code: args.reportCode,
-    startTime,
-    endTime,
-    dataType,
-  };
-  if (args.sourceID !== undefined) variables.sourceID = args.sourceID;
-  if (args.targetID !== undefined) variables.targetID = args.targetID;
-  if (args.abilityID !== undefined) variables.abilityID = args.abilityID;
-
-  const data = await executeAndUnwrap<QueryResult>(QUERY, variables);
-  if (!data.reportData.report) {
-    throw new Error(`WCL report not found: ${args.reportCode}`);
-  }
-
-  return {
-    reportCode: args.reportCode,
-    fightID: args.fightID,
-    view: args.view,
-    startTime,
-    endTime,
-    fightDuration: endTime - startTime,
-    table: addFightRelativeTimes(
-      data.reportData.report.table,
-      startTime,
+  return loadEvidence({
+    key: {
+      abilityID: args.abilityID ?? null,
       endTime,
-    ),
-  };
+      fightID: args.fightID,
+      operation: "table",
+      reportCode: args.reportCode,
+      sourceID: args.sourceID ?? null,
+      startTime,
+      targetID: args.targetID ?? null,
+      view: args.view,
+    },
+    operation: "table",
+    refresh: args.refresh,
+    loader: async (signal, observeUpstream) => {
+      const variables: Record<string, unknown> = {
+        code: args.reportCode,
+        startTime,
+        endTime,
+        dataType,
+      };
+      if (args.sourceID !== undefined) variables.sourceID = args.sourceID;
+      if (args.targetID !== undefined) variables.targetID = args.targetID;
+      if (args.abilityID !== undefined) variables.abilityID = args.abilityID;
+
+      const data = await executeAndUnwrap<QueryResult>(QUERY, variables, {
+        onResponse: observeUpstream,
+        signal,
+      });
+      if (!data.reportData.report) {
+        throw new Error(`WCL report not found: ${args.reportCode}`);
+      }
+
+      return {
+        reportCode: args.reportCode,
+        fightID: args.fightID,
+        view: args.view,
+        startTime,
+        endTime,
+        fightDuration: endTime - startTime,
+        table: addFightRelativeTimes(
+          data.reportData.report.table,
+          startTime,
+          endTime,
+        ),
+      };
+    },
+  });
 }

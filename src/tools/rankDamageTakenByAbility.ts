@@ -6,6 +6,7 @@ export interface RankDamageTakenByAbilityArgs {
   abilityNames: string[];
   fightID: number;
   includeNonPlayers?: boolean;
+  refresh?: boolean;
   reportCode: string;
 }
 
@@ -89,6 +90,7 @@ export async function rankDamageTakenByAbility(
     getFightContext({
       fightID: args.fightID,
       includeCombatantInfo: false,
+      refresh: args.refresh,
       reportCode: args.reportCode,
     }),
     executeAndUnwrap<MasterDataResult>(MASTER_DATA_QUERY, {
@@ -115,6 +117,7 @@ export async function rankDamageTakenByAbility(
         dataType: "DamageTaken",
         fightID: args.fightID,
         maxPages: 3,
+        refresh: args.refresh,
         reportCode: args.reportCode,
       });
       return {
