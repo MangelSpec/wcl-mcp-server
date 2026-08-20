@@ -46,3 +46,31 @@ test("withholds per-ability hit shares when any event stream is truncated", () =
   const [ranking] = buildAbilityRankings(players, [ability], "truncated");
   assert.equal(ranking.rankings[0].hitSharePercent, null);
 });
+
+test("merges report actor IDs that belong to the same stable player", () => {
+  const ability = { gameID: 42, name: "Toxic Droplets" };
+  const players = aggregateAbilityDamageEvents(
+    [
+      {
+        ability,
+        events: [
+          { amount: 100, targetID: 10, timestamp: 1_000 },
+          { amount: 100, targetID: 20, timestamp: 2_000 },
+        ],
+        truncated: false,
+      },
+    ],
+    {
+      actorKey: (actorID) => (actorID === 10 || actorID === 20 ? 99 : actorID),
+      actorName: () => "Player",
+      actorServer: () => "Realm",
+      actorType: () => "Warrior",
+    },
+  );
+
+  assert.equal(players.length, 1);
+  assert.equal(players[0].actorID, 10);
+  assert.equal(players[0].hits, 2);
+  assert.equal(players[0].rawDamage, 200);
+  assert.equal(players[0].server, "Realm");
+});

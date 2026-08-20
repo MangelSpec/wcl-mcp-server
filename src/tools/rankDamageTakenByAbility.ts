@@ -22,8 +22,10 @@ export interface RankDamageTakenByAbilityArgs {
 }
 
 interface Actor {
+  gameID: number | null;
   id: number;
   name: string;
+  server: string | null;
   subType: string;
   type: string;
 }
@@ -69,8 +71,10 @@ const MASTER_DATA_QUERY = /* GraphQL */ `
         title
         masterData(translate: true) {
           actors {
+            gameID
             id
             name
+            server
             type
             subType
           }
@@ -195,7 +199,14 @@ export async function rankDamageTakenByAbility(
       ? new Set(context.players.map((player) => player.actorID))
       : null;
     const aggregatedPlayers = aggregateAbilityDamageEvents(eventSets, {
+      actorKey: (actorID) => {
+        const gameID = actors.get(actorID)?.gameID;
+        return gameID === null || gameID === undefined
+          ? `actor:${actorID}`
+          : `player:${gameID}`;
+      },
       actorName: (actorID) => actors.get(actorID)?.name ?? `Actor ${actorID}`,
+      actorServer: (actorID) => actors.get(actorID)?.server ?? null,
       actorType: (actorID) => actors.get(actorID)?.subType ?? null,
       includeActor: (actorID) => {
         if (args.includeNonPlayers === true) return true;
@@ -319,17 +330,20 @@ export function matchAbilities(
 export function aggregateAbilityDamageEvents(
   eventSets: AbilityEventSet[],
   options: {
+    actorKey?: (actorID: number) => number | string;
     actorName: (actorID: number) => string;
+    actorServer?: (actorID: number) => string | null;
     actorType: (actorID: number) => string | null;
     includeActor?: (actorID: number) => boolean;
   },
 ) {
   const actors = new Map<
-    number,
+    number | string,
     {
       abilities: Map<number, AbilityTotal>;
       actorID: number;
       name: string;
+      server: string | null;
       type: string | null;
     }
   >();
@@ -344,10 +358,12 @@ export function aggregateAbilityDamageEvents(
       ) {
         continue;
       }
-      const actor = actors.get(actorID) ?? {
+      const actorKey = options.actorKey?.(actorID) ?? actorID;
+      const actor = actors.get(actorKey) ?? {
         abilities: new Map<number, AbilityTotal>(),
         actorID,
         name: options.actorName(actorID),
+        server: options.actorServer?.(actorID) ?? null,
         type: options.actorType(actorID),
       };
       const ability = actor.abilities.get(eventSet.ability.gameID) ?? {
@@ -375,7 +391,7 @@ export function aggregateAbilityDamageEvents(
       );
       if (timestamp !== null) ability.timestamps.push(timestamp);
       actor.abilities.set(eventSet.ability.gameID, ability);
-      actors.set(actorID, actor);
+      actors.set(actorKey, actor);
     }
   }
 
@@ -387,6 +403,7 @@ export function aggregateAbilityDamageEvents(
       return {
         actorID: actor.actorID,
         name: actor.name,
+        server: actor.server,
         type: actor.type,
         hits: abilities.reduce((sum, ability) => sum + ability.hits, 0),
         rawDamage: abilities.reduce(
@@ -431,6 +448,7 @@ export function buildAbilityRankings(
             {
               actorID: player.actorID,
               name: player.name,
+              server: player.server,
               type: player.type,
               hits: total.hits,
               hitSharePercent:
