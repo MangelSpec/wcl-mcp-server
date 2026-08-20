@@ -19,20 +19,22 @@ const OVERVIEW_VIEWS = [
 
 export async function getFightOverview(args: GetFightOverviewArgs) {
   const topActors = Math.min(Math.max(args.topActors ?? 10, 1), 20);
-  const [context, ...tables] = await Promise.all([
+  const [context, tables] = await Promise.all([
     getFightContext({
       fightID: args.fightID,
       includeCombatantInfo: false,
-      refresh: args.refresh,
       reportCode: args.reportCode,
+      ...(args.refresh === undefined ? {} : { refresh: args.refresh }),
     }),
-    ...OVERVIEW_VIEWS.map((view) =>
-      getTable({
-        fightID: args.fightID,
-        refresh: args.refresh,
-        reportCode: args.reportCode,
-        view,
-      }),
+    Promise.all(
+      OVERVIEW_VIEWS.map((view) =>
+        getTable({
+          fightID: args.fightID,
+          reportCode: args.reportCode,
+          view,
+          ...(args.refresh === undefined ? {} : { refresh: args.refresh }),
+        }),
+      ),
     ),
   ]);
 

@@ -18,7 +18,8 @@
     "auth:status": "node dist/authorize.js --status",
     "auth:logout": "node dist/authorize.js --logout",
     "prepare": "tsc",
-    "test": "npm run build && node --test test/*.test.mjs"
+    "test": "npm run build && node --test test/*.test.mjs",
+    "typecheck:exact-optional": "tsc --noEmit --exactOptionalPropertyTypes true"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",

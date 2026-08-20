@@ -130,8 +130,10 @@ export async function executeGraphQL<T = unknown>(
       invalidateToken();
       return executeGraphQL<T>(query, variables, {
         _retriedOn401: true,
-        onResponse: options.onResponse,
-        signal: options.signal,
+        ...(options.onResponse === undefined
+          ? {}
+          : { onResponse: options.onResponse }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
       });
     }
 

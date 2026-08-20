@@ -107,7 +107,7 @@ Credentials are read from the [.env](.env) file at repo root via `dotenv`, which
 
 Individual Warcraft Logs GraphQL requests time out after 60 seconds by default. Set `WCL_REQUEST_TIMEOUT_MS` between `5000` and `180000` when the deployment needs a different bounded request budget.
 
-Structured fight context, table, and event evidence is cached in-process with single-flight request coalescing. The cache is fixed at 128 completed entries, 32 MiB total retained bytes, 4 MiB per entry, and 32 distinct in-flight keys. Context and table entries expire after 60 seconds; event entries expire after 30 seconds. Expired data is never served. `refresh: true` removes a completed entry and joins any active load for the same resolved resource. Raw GraphQL, authentication, rate-limit snapshots, GraphQL errors, partial GraphQL responses with errors, and the existing report metadata cache are excluded.
+Structured fight context, table, and event evidence is cached in-process with single-flight request coalescing. The defaults are 128 completed entries, 32 MiB total retained bytes, 4 MiB per entry, and 32 distinct in-flight keys. Set `WCL_EVIDENCE_CACHE_MAX_ENTRIES`, `WCL_EVIDENCE_CACHE_MAX_BYTES`, or `WCL_EVIDENCE_CACHE_MAX_ENTRY_BYTES` to positive integers to override the completed-entry bounds. Entry count is capped at 1,024, and either byte setting is capped at 1 GiB. Context and table entries expire after 60 seconds; event entries expire after 30 seconds. Expired data is never served. `refresh: true` removes a completed entry and joins any active load for the same resolved resource. Raw GraphQL, authentication, rate-limit snapshots, GraphQL errors, partial GraphQL responses with errors, and the existing report metadata cache are excluded.
 
 ```json
 {

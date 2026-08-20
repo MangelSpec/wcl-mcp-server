@@ -136,7 +136,7 @@ export async function getTable(args: GetTableArgs): Promise<GetTableResult> {
       view: args.view,
     },
     operation: "table",
-    refresh: args.refresh,
+    ...(args.refresh === undefined ? {} : { refresh: args.refresh }),
     loader: async (signal, observeUpstream) => {
       const variables: Record<string, unknown> = {
         code: args.reportCode,

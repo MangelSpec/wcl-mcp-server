@@ -592,9 +592,9 @@ async function handleToolCall(request: CallToolRequest) {
         const refresh = optionalBoolean(args, "refresh");
         const data = await getFights({
           reportCode,
-          encounterID,
-          killType,
-          refresh,
+          ...(encounterID === undefined ? {} : { encounterID }),
+          ...(killType === undefined ? {} : { killType }),
+          ...(refresh === undefined ? {} : { refresh }),
         });
         return ok(data);
       }
@@ -626,10 +626,10 @@ async function handleToolCall(request: CallToolRequest) {
           reportCode,
           fightIDs,
           views,
-          abilityID,
-          sourceID,
-          targetID,
-          maxRows,
+          ...(abilityID === undefined ? {} : { abilityID }),
+          ...(sourceID === undefined ? {} : { sourceID }),
+          ...(targetID === undefined ? {} : { targetID }),
+          ...(maxRows === undefined ? {} : { maxRows }),
         });
         return ok(data);
       }
@@ -646,10 +646,10 @@ async function handleToolCall(request: CallToolRequest) {
           reportCode,
           fightID,
           view,
-          sourceID,
-          targetID,
-          abilityID,
-          refresh,
+          ...(sourceID === undefined ? {} : { sourceID }),
+          ...(targetID === undefined ? {} : { targetID }),
+          ...(abilityID === undefined ? {} : { abilityID }),
+          ...(refresh === undefined ? {} : { refresh }),
         });
         return ok(data);
       }
@@ -670,14 +670,14 @@ async function handleToolCall(request: CallToolRequest) {
           reportCode,
           fightID,
           dataType,
-          sourceID,
-          targetID,
-          abilityID,
-          limit,
-          startTime,
-          endTime,
-          maxPages,
-          refresh,
+          ...(sourceID === undefined ? {} : { sourceID }),
+          ...(targetID === undefined ? {} : { targetID }),
+          ...(abilityID === undefined ? {} : { abilityID }),
+          ...(limit === undefined ? {} : { limit }),
+          ...(startTime === undefined ? {} : { startTime }),
+          ...(endTime === undefined ? {} : { endTime }),
+          ...(maxPages === undefined ? {} : { maxPages }),
+          ...(refresh === undefined ? {} : { refresh }),
         });
         return ok(data);
       }
@@ -708,13 +708,15 @@ async function handleToolCall(request: CallToolRequest) {
           className,
           specName,
           targetDurationMs,
-          metric,
-          bracket,
-          externalBuffs,
-          durationTolerancePercent,
-          maxPages,
-          resultLimit,
-          excludeReportCode,
+          ...(metric === undefined ? {} : { metric }),
+          ...(bracket === undefined ? {} : { bracket }),
+          ...(externalBuffs === undefined ? {} : { externalBuffs }),
+          ...(durationTolerancePercent === undefined
+            ? {}
+            : { durationTolerancePercent }),
+          ...(maxPages === undefined ? {} : { maxPages }),
+          ...(resultLimit === undefined ? {} : { resultLimit }),
+          ...(excludeReportCode === undefined ? {} : { excludeReportCode }),
         });
         return ok(data);
       }
@@ -730,8 +732,10 @@ async function handleToolCall(request: CallToolRequest) {
         const data = await getFightContext({
           reportCode,
           fightID,
-          includeCombatantInfo,
-          refresh,
+          ...(includeCombatantInfo === undefined
+            ? {}
+            : { includeCombatantInfo }),
+          ...(refresh === undefined ? {} : { refresh }),
         });
         return ok(data);
       }
@@ -744,8 +748,8 @@ async function handleToolCall(request: CallToolRequest) {
         const data = await getFightOverview({
           reportCode,
           fightID,
-          topActors,
-          refresh,
+          ...(topActors === undefined ? {} : { topActors }),
+          ...(refresh === undefined ? {} : { refresh }),
         });
         return ok(data);
       }
@@ -770,10 +774,10 @@ async function handleToolCall(request: CallToolRequest) {
           startTime,
           endTime,
           dataTypes,
-          focusAbilityName,
-          sourceID,
-          targetID,
-          abilityID,
+          ...(focusAbilityName === undefined ? {} : { focusAbilityName }),
+          ...(sourceID === undefined ? {} : { sourceID }),
+          ...(targetID === undefined ? {} : { targetID }),
+          ...(abilityID === undefined ? {} : { abilityID }),
         });
         return ok(data);
       }
@@ -788,8 +792,8 @@ async function handleToolCall(request: CallToolRequest) {
           reportCode,
           fightID,
           abilityNames,
-          includeNonPlayers,
-          refresh,
+          ...(includeNonPlayers === undefined ? {} : { includeNonPlayers }),
+          ...(refresh === undefined ? {} : { refresh }),
         });
         return ok(data);
       }
@@ -804,8 +808,8 @@ async function handleToolCall(request: CallToolRequest) {
           reportCode,
           fightID,
           sourceID,
-          includeRankings,
-          includeRawTables,
+          ...(includeRankings === undefined ? {} : { includeRankings }),
+          ...(includeRawTables === undefined ? {} : { includeRawTables }),
         });
         return ok(data);
       }
@@ -813,7 +817,10 @@ async function handleToolCall(request: CallToolRequest) {
       case "wcl_graphql": {
         const query = requireString(args, "query");
         const variables = optionalObject(args, "variables");
-        const data = await runGraphQL({ query, variables });
+        const data = await runGraphQL({
+          query,
+          ...(variables === undefined ? {} : { variables }),
+        });
         return ok(data);
       }
 

@@ -100,9 +100,11 @@ async function main(): Promise<void> {
 
   const stored: StoredToken = {
     accessToken: token.access_token,
-    refreshToken: token.refresh_token,
     expiresAt: Date.now() + token.expires_in * 1000,
     obtainedAt: Date.now(),
+    ...(token.refresh_token === undefined
+      ? {}
+      : { refreshToken: token.refresh_token }),
   };
   writeStoredToken(stored);
   console.log(`Saved to ${getTokenFilePath()} (mode 0600).`);

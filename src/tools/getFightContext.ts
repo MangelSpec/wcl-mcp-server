@@ -102,7 +102,7 @@ export async function getFightContext(args: GetFightContextArgs) {
       reportCode: args.reportCode,
     },
     operation: "context",
-    refresh: args.refresh,
+    ...(args.refresh === undefined ? {} : { refresh: args.refresh }),
     loader: async (signal, observeUpstream) => {
       const data = await executeAndUnwrap<QueryResult>(
         QUERY,

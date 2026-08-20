@@ -183,7 +183,7 @@ export async function getEvents(args: GetEventsArgs): Promise<GetEventsResult> {
       targetID: args.targetID ?? null,
     },
     operation: "events",
-    refresh: args.refresh,
+    ...(args.refresh === undefined ? {} : { refresh: args.refresh }),
     loader: async (signal, observeUpstream) => {
       const allEvents: unknown[] = [];
       let cursor = window.reportRelativeStartTime;

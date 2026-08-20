@@ -7,6 +7,12 @@ export const EVIDENCE_CACHE_LIMITS = {
   maxInflight: 32,
 } as const;
 
+const EVIDENCE_CACHE_MAXIMUMS = {
+  maxBytes: 1024 * 1024 * 1024,
+  maxEntries: 1024,
+  maxEntryBytes: 1024 * 1024 * 1024,
+} as const;
+
 export const EVIDENCE_TTLS = {
   context: 60_000,
   events: 30_000,
@@ -149,8 +155,12 @@ export class EvidenceCache {
         const metrics = claimLoadedMetrics(pending, loaded);
         this.#emit({
           cache: "evidence",
-          decodedBytes: metrics?.decodedBytes,
-          durationMs: metrics?.upstreamDurationMs,
+          ...(metrics === undefined
+            ? {}
+            : {
+                decodedBytes: metrics.decodedBytes,
+                durationMs: metrics.upstreamDurationMs,
+              }),
           operation: options.operation,
           outcome: "coalesced",
           source: "wcl",
@@ -160,8 +170,12 @@ export class EvidenceCache {
         const metrics = claimFailureMetrics(pending, error);
         this.#emit({
           cache: "evidence",
-          decodedBytes: metrics?.decodedBytes,
-          durationMs: metrics?.upstreamDurationMs,
+          ...(metrics === undefined
+            ? {}
+            : {
+                decodedBytes: metrics.decodedBytes,
+                durationMs: metrics.upstreamDurationMs,
+              }),
           operation: options.operation,
           outcome: "load_error",
           source: "wcl",
@@ -212,8 +226,12 @@ export class EvidenceCache {
       const metrics = claimLoadedMetrics(inflight, loaded);
       this.#emit({
         cache: "evidence",
-        decodedBytes: metrics?.decodedBytes,
-        durationMs: metrics?.upstreamDurationMs,
+        ...(metrics === undefined
+          ? {}
+          : {
+              decodedBytes: metrics.decodedBytes,
+              durationMs: metrics.upstreamDurationMs,
+            }),
         operation: options.operation,
         outcome:
           loaded.evicted
@@ -225,7 +243,7 @@ export class EvidenceCache {
               : options.refresh === true
                 ? "refresh"
                 : "miss",
-        retainedBytes: retained,
+        ...(retained === undefined ? {} : { retainedBytes: retained }),
         source: "wcl",
       });
       return cloneLoaded<T>(loaded);
@@ -233,7 +251,9 @@ export class EvidenceCache {
       const failure = claimFailureMetrics(inflight, error);
       this.#emit({
         cache: "evidence",
-        decodedBytes: failure?.decodedBytes,
+        ...(failure === undefined
+          ? {}
+          : { decodedBytes: failure.decodedBytes }),
         durationMs:
           failure?.upstreamDurationMs ??
           Math.max(0, this.#monotonicNow() - startedAt),
@@ -296,7 +316,9 @@ export class EvidenceCache {
       const failure = loadFailureMetrics(error);
       this.#emit({
         cache: "evidence",
-        decodedBytes: failure?.decodedBytes,
+        ...(failure === undefined
+          ? {}
+          : { decodedBytes: failure.decodedBytes }),
         durationMs:
           failure?.upstreamDurationMs ??
           Math.max(0, this.#monotonicNow() - startedAt),
@@ -372,8 +394,52 @@ export class EvidenceCache {
   }
 }
 
+export function parseEvidenceCacheLimits(
+  environment: Record<string, string | undefined> = process.env,
+): Omit<EvidenceCacheOptions, "now" | "observer"> {
+  return {
+    maxBytes: parseEvidenceCacheLimit(
+      "WCL_EVIDENCE_CACHE_MAX_BYTES",
+      environment.WCL_EVIDENCE_CACHE_MAX_BYTES,
+      EVIDENCE_CACHE_LIMITS.maxBytes,
+      EVIDENCE_CACHE_MAXIMUMS.maxBytes,
+    ),
+    maxEntries: parseEvidenceCacheLimit(
+      "WCL_EVIDENCE_CACHE_MAX_ENTRIES",
+      environment.WCL_EVIDENCE_CACHE_MAX_ENTRIES,
+      EVIDENCE_CACHE_LIMITS.maxEntries,
+      EVIDENCE_CACHE_MAXIMUMS.maxEntries,
+    ),
+    maxEntryBytes: parseEvidenceCacheLimit(
+      "WCL_EVIDENCE_CACHE_MAX_ENTRY_BYTES",
+      environment.WCL_EVIDENCE_CACHE_MAX_ENTRY_BYTES,
+      EVIDENCE_CACHE_LIMITS.maxEntryBytes,
+      EVIDENCE_CACHE_MAXIMUMS.maxEntryBytes,
+    ),
+    maxInflight: EVIDENCE_CACHE_LIMITS.maxInflight,
+  };
+}
+
+function parseEvidenceCacheLimit(
+  name: string,
+  value: string | undefined,
+  defaultValue: number,
+  maximum: number,
+): number {
+  const normalized = value?.trim();
+  if (normalized === undefined || normalized === "") return defaultValue;
+  if (!/^[1-9]\d*$/.test(normalized)) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  const parsed = Number(normalized);
+  if (!Number.isSafeInteger(parsed) || parsed > maximum) {
+    throw new Error(`${name} must be between 1 and ${maximum}`);
+  }
+  return parsed;
+}
+
 const sharedCache = new EvidenceCache({
-  ...EVIDENCE_CACHE_LIMITS,
+  ...parseEvidenceCacheLimits(),
   observer: observeEvidenceEvent,
 });
 

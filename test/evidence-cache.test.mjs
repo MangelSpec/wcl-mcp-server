@@ -8,6 +8,7 @@ import {
   EVIDENCE_CACHE_LIMITS,
   EVIDENCE_TTLS,
   loadEvidence,
+  parseEvidenceCacheLimits,
   withEvidenceTelemetry,
 } from "../dist/evidenceCache.js";
 import { ok } from "../dist/toolResult.js";
@@ -44,6 +45,49 @@ test("publishes the exact Step 5 bounds and TTLs", () => {
     events: 30_000,
     table: 60_000,
   });
+});
+
+test("loads bounded evidence cache settings from optional environment values", () => {
+  assert.deepEqual(parseEvidenceCacheLimits({}), EVIDENCE_CACHE_LIMITS);
+  assert.deepEqual(
+    parseEvidenceCacheLimits({
+      WCL_EVIDENCE_CACHE_MAX_BYTES: " 1000 ",
+      WCL_EVIDENCE_CACHE_MAX_ENTRIES: "7",
+      WCL_EVIDENCE_CACHE_MAX_ENTRY_BYTES: "500",
+    }),
+    {
+      maxBytes: 1_000,
+      maxEntries: 7,
+      maxEntryBytes: 500,
+      maxInflight: 32,
+    },
+  );
+  assert.deepEqual(
+    parseEvidenceCacheLimits({
+      WCL_EVIDENCE_CACHE_MAX_BYTES: "1073741824",
+      WCL_EVIDENCE_CACHE_MAX_ENTRIES: "1024",
+      WCL_EVIDENCE_CACHE_MAX_ENTRY_BYTES: "1073741824",
+    }),
+    {
+      maxBytes: 1_073_741_824,
+      maxEntries: 1_024,
+      maxEntryBytes: 1_073_741_824,
+      maxInflight: 32,
+    },
+  );
+});
+
+test("rejects unsafe evidence cache environment values", () => {
+  for (const [name, value] of [
+    ["WCL_EVIDENCE_CACHE_MAX_ENTRIES", "0"],
+    ["WCL_EVIDENCE_CACHE_MAX_ENTRIES", "1025"],
+    ["WCL_EVIDENCE_CACHE_MAX_BYTES", "1073741825"],
+    ["WCL_EVIDENCE_CACHE_MAX_ENTRY_BYTES", "1.5"],
+    ["WCL_EVIDENCE_CACHE_MAX_ENTRY_BYTES", "01"],
+    ["WCL_EVIDENCE_CACHE_MAX_ENTRY_BYTES", "1e3"],
+  ]) {
+    assert.throws(() => parseEvidenceCacheLimits({ [name]: value }));
+  }
 });
 
 test("canonical keys sort objects, preserve arrays, omit undefined, and reject unsupported JSON", () => {
@@ -443,6 +487,10 @@ test("reports failed actual-load metrics once across coalesced callers", async (
   ]);
   assert.equal(events.length, 2);
   assert.ok(events.every((event) => event.outcome === "load_error"));
+  assert.equal(
+    events.filter((event) => Object.hasOwn(event, "decodedBytes")).length,
+    1,
+  );
   assert.deepEqual(
     events.filter((event) => event.decodedBytes !== undefined),
     [
