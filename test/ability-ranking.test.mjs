@@ -34,7 +34,6 @@ test("withholds per-ability hit shares when any event stream is truncated", () =
       {
         ability,
         events: [{ amount: 100, targetID: 1, timestamp: 1_000 }],
-        fightID: 1,
         truncated: true,
       },
     ],

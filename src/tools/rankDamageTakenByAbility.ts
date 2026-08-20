@@ -46,7 +46,6 @@ interface MasterDataResult {
 interface AbilityEventSet {
   ability: Ability;
   events: unknown[];
-  fightID: number;
   truncated: boolean;
 }
 
@@ -184,7 +183,6 @@ export async function rankDamageTakenByAbility(
         return {
           ability,
           events: result.events,
-          fightID,
           truncated: result.truncated,
         };
       },
