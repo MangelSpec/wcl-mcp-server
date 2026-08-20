@@ -76,6 +76,8 @@ export interface GetEventsArgs {
   /** Max auto-pagination pages before signalling truncation. Default 3. */
   maxPages?: number;
   refresh?: boolean;
+  /** Internal caller cancellation; not exposed by the MCP tool schema. */
+  signal?: AbortSignal;
 }
 
 export interface GetEventsResult {
@@ -188,7 +190,11 @@ export async function getEvents(args: GetEventsArgs): Promise<GetEventsResult> {
     },
     operation: "events",
     ...(args.refresh === undefined ? {} : { refresh: args.refresh }),
-    loader: async (signal, observeUpstream) => {
+    ...(args.signal === undefined ? {} : { signal: args.signal }),
+    loader: async (cacheSignal, observeUpstream) => {
+      const signal = args.signal
+        ? AbortSignal.any([cacheSignal, args.signal])
+        : cacheSignal;
       const allEvents: unknown[] = [];
       let cursor = window.reportRelativeStartTime;
       let pagesReturned = 0;

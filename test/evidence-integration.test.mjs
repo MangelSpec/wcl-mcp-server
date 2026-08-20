@@ -23,6 +23,7 @@ function installMockWcl() {
   const calls = new Map();
   let contextError = null;
   let contextHttpFailure = null;
+  let eventHandler = null;
   let reportEndTime = 60_000;
   const requests = [];
   process.env.WCL_CLIENT_ID = "test-client";
@@ -57,6 +58,9 @@ function installMockWcl() {
     if (operation === "context" && contextError) {
       return Response.json(contextError);
     }
+    if (operation === "events" && eventHandler) {
+      return eventHandler({ init, variables });
+    }
     return Response.json({
       data: responseData(operation, variables, reportEndTime),
     });
@@ -76,6 +80,9 @@ function installMockWcl() {
     },
     setContextHttpFailure(value) {
       contextHttpFailure = value;
+    },
+    setEventHandler(value) {
+      eventHandler = value;
     },
     setReportEndTime(value) {
       reportEndTime = value;
@@ -108,10 +115,7 @@ function responseData(operation, variables, reportEndTime = 60_000) {
           title: "Test report",
           startTime: 0,
           endTime: reportEndTime,
-          fights: [
-            fight(1, 10_000, reportEndTime),
-            fight(2, 80_000, 120_000),
-          ],
+          fights: [fight(1, 10_000, reportEndTime), fight(2, 80_000, 120_000)],
         },
       },
     };
@@ -160,12 +164,15 @@ function responseData(operation, variables, reportEndTime = 60_000) {
       rateLimitData,
       reportData: {
         report: {
+          code: variables.code,
           masterData: {
             abilities: [{ gameID: 42, name: "Test Quill" }],
             actors: [
               { id: 1, name: "Player", subType: "Warrior", type: "Player" },
+              { id: 2, name: "Healer", subType: "Priest", type: "Player" },
             ],
           },
+          title: "Test report",
         },
       },
     };
@@ -224,6 +231,100 @@ test("overview and later composite/primitive paths reuse matching evidence exact
       1,
       "uncached composite-only query still runs",
     );
+  } finally {
+    mock.restore();
+  }
+});
+
+test("ability ranking aggregates bounded fight sets and calculates complete hit shares", async () => {
+  const mock = installMockWcl();
+  try {
+    mock.setEventHandler(({ variables }) => {
+      const firstFight = variables.startTime < 80_000;
+      return Response.json({
+        data: {
+          rateLimitData: {
+            limitPerHour: 3600,
+            pointsResetIn: 100,
+            pointsSpentThisHour: 10,
+          },
+          reportData: {
+            report: {
+              events: {
+                data: firstFight
+                  ? [
+                      { amount: 100, targetID: 1, timestamp: 20_000 },
+                      { amount: 100, targetID: 1, timestamp: 21_000 },
+                      { amount: 100, targetID: 2, timestamp: 22_000 },
+                    ]
+                  : [
+                      { amount: 100, targetID: 1, timestamp: 90_000 },
+                      { amount: 100, targetID: 2, timestamp: 91_000 },
+                      { amount: 100, targetID: 2, timestamp: 92_000 },
+                    ],
+                nextPageTimestamp: null,
+              },
+            },
+          },
+        },
+      });
+    });
+
+    const result = await rankDamageTakenByAbility({
+      abilityNames: ["Test Quill"],
+      fightIDs: [1, 2],
+      reportCode: "R",
+    });
+
+    assert.equal(result.evidenceCompleteness, "complete");
+    assert.equal(result.scope.fightCount, 2);
+    assert.deepEqual(result.scope.fightIDs, [1, 2]);
+    assert.equal(result.totalHits, 6);
+    assert.equal(
+      result.percentageDenominator,
+      "all matching damage events across the selected fights",
+    );
+    assert.deepEqual(
+      result.players.map(({ actorID, hits, hitSharePercent }) => ({
+        actorID,
+        hits,
+        hitSharePercent,
+      })),
+      [
+        { actorID: 1, hits: 3, hitSharePercent: 50 },
+        { actorID: 2, hits: 3, hitSharePercent: 50 },
+      ],
+    );
+    assert.equal(mock.calls.get("events"), 2);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("ability ranking enforces its shared deadline and aborts queued work", async () => {
+  const mock = installMockWcl();
+  try {
+    mock.setEventHandler(
+      ({ init }) =>
+        new Promise((resolve, reject) => {
+          const signal = init.signal;
+          const onAbort = () =>
+            reject(new DOMException("The operation was aborted", "AbortError"));
+          if (signal?.aborted) onAbort();
+          else signal?.addEventListener("abort", onAbort, { once: true });
+        }),
+    );
+
+    await assert.rejects(
+      rankDamageTakenByAbility({
+        abilityNames: ["Test Quill"],
+        deadlineMs: 20,
+        fightIDs: [1, 2],
+        reportCode: "R",
+      }),
+      /exceeded its 20ms deadline/,
+    );
+    assert.ok((mock.calls.get("events") ?? 0) <= 2);
   } finally {
     mock.restore();
   }

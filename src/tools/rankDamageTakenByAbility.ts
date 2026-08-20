@@ -1,13 +1,24 @@
 import { executeAndUnwrap } from "../client.js";
+import { getCachedReport, type Fight } from "../reportCache.js";
 import { getEvents } from "./getEvents.js";
 import { getFightContext } from "./getFightContext.js";
 
+export const MAX_ABILITY_FIGHT_SET_SIZE = 20;
+export const MAX_ABILITY_EVENT_QUERIES = 50;
+export const ABILITY_EVENT_CONCURRENCY = 4;
+export const ABILITY_RANKING_TIMEOUT_MS = 90_000;
+
 export interface RankDamageTakenByAbilityArgs {
   abilityNames: string[];
-  fightID: number;
+  fightID?: number;
+  fightIDs?: number[];
   includeNonPlayers?: boolean;
   refresh?: boolean;
   reportCode: string;
+  /** Internal composite deadline override used by focused tests. */
+  deadlineMs?: number;
+  /** Internal caller cancellation; not exposed by the MCP tool schema. */
+  signal?: AbortSignal;
 }
 
 interface Actor {
@@ -25,7 +36,9 @@ interface Ability {
 interface MasterDataResult {
   reportData: {
     report: {
+      code: string;
       masterData: { abilities: Ability[]; actors: Actor[] } | null;
+      title: string;
     } | null;
   };
 }
@@ -33,6 +46,7 @@ interface MasterDataResult {
 interface AbilityEventSet {
   ability: Ability;
   events: unknown[];
+  fightID: number;
   truncated: boolean;
 }
 
@@ -52,6 +66,8 @@ const MASTER_DATA_QUERY = /* GraphQL */ `
   query AbilityDamageMasterData($code: String!) {
     reportData {
       report(code: $code) {
+        code
+        title
         masterData(translate: true) {
           actors {
             id
@@ -77,6 +93,7 @@ const MASTER_DATA_QUERY = /* GraphQL */ `
 export async function rankDamageTakenByAbility(
   args: RankDamageTakenByAbilityArgs,
 ) {
+  const fightIDs = selectedFightIDs(args);
   const abilityNames = [
     ...new Set(args.abilityNames.map((name) => name.trim())),
   ]
@@ -86,85 +103,203 @@ export async function rankDamageTakenByAbility(
     throw new Error("abilityNames must contain at least one non-empty name");
   }
 
-  const [context, masterDataResult] = await Promise.all([
-    getFightContext({
-      fightID: args.fightID,
-      includeCombatantInfo: false,
-      reportCode: args.reportCode,
-      ...(args.refresh === undefined ? {} : { refresh: args.refresh }),
-    }),
-    executeAndUnwrap<MasterDataResult>(MASTER_DATA_QUERY, {
-      code: args.reportCode,
-    }),
-  ]);
-  const report = masterDataResult.reportData.report;
-  if (!report) throw new Error(`WCL report not found: ${args.reportCode}`);
-  const masterData = report.masterData;
-  const matchedAbilities = matchAbilities(
-    masterData?.abilities ?? [],
-    abilityNames,
-  );
-  if (matchedAbilities.length > 10) {
-    throw new Error(
-      `Ability names matched ${matchedAbilities.length} abilities; use more specific names (maximum 10).`,
-    );
+  const deadlineMs = args.deadlineMs ?? ABILITY_RANKING_TIMEOUT_MS;
+  if (!Number.isSafeInteger(deadlineMs) || deadlineMs < 1) {
+    throw new Error("deadlineMs must be a positive safe integer");
   }
-
-  const eventSets: AbilityEventSet[] = await Promise.all(
-    matchedAbilities.map(async (ability) => {
-      const result = await getEvents({
-        abilityID: ability.gameID,
-        dataType: "DamageTaken",
-        fightID: args.fightID,
-        maxPages: 3,
-        reportCode: args.reportCode,
-        ...(args.refresh === undefined ? {} : { refresh: args.refresh }),
-      });
-      return {
-        ability,
-        events: result.events,
-        truncated: result.truncated,
-      };
-    }),
+  const deadlineController = new AbortController();
+  const deadlineHandle = setTimeout(
+    () => deadlineController.abort(),
+    deadlineMs,
   );
-  const rosterIDs = new Set(context.players.map((player) => player.actorID));
-  const actors = new Map(
-    (masterData?.actors ?? []).map((actor) => [actor.id, actor]),
-  );
-  const players = aggregateAbilityDamageEvents(eventSets, {
-    actorName: (actorID) => actors.get(actorID)?.name ?? `Actor ${actorID}`,
-    actorType: (actorID) => actors.get(actorID)?.subType ?? null,
-    includeActor: (actorID) =>
-      args.includeNonPlayers === true || rosterIDs.has(actorID),
-  });
-  const abilityRankings = buildAbilityRankings(players, matchedAbilities);
+  const signal = args.signal
+    ? AbortSignal.any([args.signal, deadlineController.signal])
+    : deadlineController.signal;
 
-  return {
-    report: context.report,
-    fight: context.fight,
-    match: {
-      requestedNames: abilityNames,
-      matchedAbilities,
-      normalization: "case-insensitive words; plural trailing s ignored",
-    },
-    players,
-    abilityRankings,
-    matchedPlayers: players.length,
-    metricDefinitions: {
-      hits: "number of matching WCL damage events, including fully absorbed hits",
-      rawDamage: "event amount plus absorbed damage",
-      effectiveDamage: "event amount minus overkill",
-      unmitigatedDamage: "WCL unmitigatedAmount before mitigation",
-    },
-    evidenceCompleteness: eventSets.some((set) => set.truncated)
+  try {
+    signal.throwIfAborted();
+    const contextPromise =
+      fightIDs.length === 1
+        ? getFightContext({
+            fightID: fightIDs[0] as number,
+            includeCombatantInfo: false,
+            reportCode: args.reportCode,
+            ...(args.refresh === undefined ? {} : { refresh: args.refresh }),
+            signal,
+          })
+        : null;
+    const [cached, context, masterDataResult] = await Promise.all([
+      getCachedReport(
+        args.reportCode,
+        args.refresh === undefined ? {} : { refresh: args.refresh },
+      ),
+      contextPromise,
+      executeAndUnwrap<MasterDataResult>(
+        MASTER_DATA_QUERY,
+        { code: args.reportCode },
+        { signal },
+      ),
+    ]);
+    signal.throwIfAborted();
+    const selectedFights = validatedFights(
+      cached.fights,
+      fightIDs,
+      args.reportCode,
+    );
+    const report = masterDataResult.reportData.report;
+    if (!report) throw new Error(`WCL report not found: ${args.reportCode}`);
+    const masterData = report.masterData;
+    const matchedAbilities = matchAbilities(
+      masterData?.abilities ?? [],
+      abilityNames,
+    );
+    if (matchedAbilities.length > 10) {
+      throw new Error(
+        `Ability names matched ${matchedAbilities.length} abilities; use more specific names (maximum 10).`,
+      );
+    }
+    const queryCount = fightIDs.length * matchedAbilities.length;
+    if (queryCount > MAX_ABILITY_EVENT_QUERIES) {
+      throw new Error(
+        `The selected fights and matched abilities require ${queryCount} event queries; narrow the request to at most ${MAX_ABILITY_EVENT_QUERIES}.`,
+      );
+    }
+
+    const jobs = fightIDs.flatMap((fightID) =>
+      matchedAbilities.map((ability) => ({ ability, fightID })),
+    );
+    const eventSets = await mapWithConcurrency(
+      jobs,
+      ABILITY_EVENT_CONCURRENCY,
+      async ({ ability, fightID }) => {
+        const result = await getEvents({
+          abilityID: ability.gameID,
+          dataType: "DamageTaken",
+          fightID,
+          maxPages: 3,
+          reportCode: args.reportCode,
+          ...(args.refresh === undefined ? {} : { refresh: args.refresh }),
+          signal,
+        });
+        return {
+          ability,
+          events: result.events,
+          fightID,
+          truncated: result.truncated,
+        };
+      },
+      signal,
+    );
+    const actors = new Map(
+      (masterData?.actors ?? []).map((actor) => [actor.id, actor]),
+    );
+    const rosterIDs = context
+      ? new Set(context.players.map((player) => player.actorID))
+      : null;
+    const aggregatedPlayers = aggregateAbilityDamageEvents(eventSets, {
+      actorName: (actorID) => actors.get(actorID)?.name ?? `Actor ${actorID}`,
+      actorType: (actorID) => actors.get(actorID)?.subType ?? null,
+      includeActor: (actorID) => {
+        if (args.includeNonPlayers === true) return true;
+        return (
+          rosterIDs?.has(actorID) ?? actors.get(actorID)?.type === "Player"
+        );
+      },
+    });
+    const evidenceCompleteness = eventSets.some((set) => set.truncated)
       ? "truncated"
-      : "complete",
-    caveats: [
-      "Results are derived from ability-filtered WCL damage events, not summary-table rankings.",
-      "By default only actors in the exact fight roster are returned; set includeNonPlayers true to include pets or NPCs.",
-      "Hit count describes logged damage events and does not determine whether a soak was assigned or correct.",
-    ],
-  };
+      : "complete";
+    const totalHits = aggregatedPlayers.reduce(
+      (sum, player) => sum + player.hits,
+      0,
+    );
+    const players = addHitShares(
+      aggregatedPlayers,
+      evidenceCompleteness === "complete" ? totalHits : null,
+    );
+    const abilityRankings = buildAbilityRankings(
+      players,
+      matchedAbilities,
+      evidenceCompleteness,
+    );
+
+    return {
+      report: { code: report.code, title: report.title },
+      ...(context ? { fight: context.fight } : {}),
+      scope: {
+        fightCount: selectedFights.length,
+        fightIDs,
+        fights: selectedFights.map(compactFight),
+      },
+      match: {
+        requestedNames: abilityNames,
+        matchedAbilities,
+        normalization: "case-insensitive words; plural trailing s ignored",
+      },
+      players,
+      abilityRankings,
+      matchedPlayers: players.length,
+      totalHits: evidenceCompleteness === "complete" ? totalHits : null,
+      percentageDenominator:
+        evidenceCompleteness === "complete"
+          ? "all matching damage events across the selected fights"
+          : null,
+      metricDefinitions: {
+        hits: "number of matching WCL damage events, including fully absorbed hits",
+        hitSharePercent:
+          "player hits divided by all matching player hits across the selected fights",
+        rawDamage: "event amount plus absorbed damage",
+        effectiveDamage: "event amount minus overkill",
+        unmitigatedDamage: "WCL unmitigatedAmount before mitigation",
+      },
+      evidenceCompleteness,
+      caveats: [
+        "Results are derived from ability-filtered WCL damage events, not summary-table rankings.",
+        "By default only player actors hit during the selected fights are returned; set includeNonPlayers true to include pets or NPCs.",
+        ...(evidenceCompleteness === "complete"
+          ? []
+          : [
+              "At least one event stream hit its pagination cap, so hit-share percentages and their denominator are withheld.",
+            ]),
+        "Hit count describes logged damage events and does not determine whether a soak was assigned or correct.",
+      ],
+    };
+  } catch (error) {
+    if (deadlineController.signal.aborted && !args.signal?.aborted) {
+      throw new Error(
+        `Ability damage ranking exceeded its ${deadlineMs}ms deadline`,
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(deadlineHandle);
+  }
+}
+
+export async function mapWithConcurrency<T, R>(
+  values: T[],
+  concurrency: number,
+  mapper: (value: T, index: number) => Promise<R>,
+  signal?: AbortSignal,
+): Promise<R[]> {
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
+    throw new Error("concurrency must be a positive safe integer");
+  }
+  const results = new Array<R>(values.length);
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(concurrency, values.length) },
+    async () => {
+      while (true) {
+        signal?.throwIfAborted();
+        const index = nextIndex++;
+        if (index >= values.length) return;
+        results[index] = await mapper(values[index] as T, index);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return results;
 }
 
 export function matchAbilities(
@@ -285,8 +420,10 @@ export function aggregateAbilityDamageEvents(
 export function buildAbilityRankings(
   players: ReturnType<typeof aggregateAbilityDamageEvents>,
   abilities: Ability[],
+  evidenceCompleteness: "complete" | "truncated" = "complete",
 ) {
   return abilities.map((ability) => {
+    const totalAbilityHits = rowsHitTotal(players, ability.gameID);
     const rows = players.flatMap((player) => {
       const total = player.abilities.find(
         (candidate) => candidate.gameID === ability.gameID,
@@ -298,6 +435,10 @@ export function buildAbilityRankings(
               name: player.name,
               type: player.type,
               hits: total.hits,
+              hitSharePercent:
+                evidenceCompleteness === "complete"
+                  ? percentage(total.hits, totalAbilityHits)
+                  : null,
               rawDamage: total.rawDamage,
               effectiveDamage: total.effectiveDamage,
               absorbed: total.absorbed,
@@ -333,6 +474,85 @@ export function buildAbilityRankings(
       rankings,
     };
   });
+}
+
+function addHitShares<T extends { hits: number }>(
+  players: T[],
+  totalHits: number | null,
+): Array<T & { hitSharePercent: number | null }> {
+  return players.map((player) => ({
+    ...player,
+    hitSharePercent:
+      totalHits === null ? null : percentage(player.hits, totalHits),
+  }));
+}
+
+function rowsHitTotal(
+  players: ReturnType<typeof aggregateAbilityDamageEvents>,
+  abilityID: number,
+): number {
+  return players.reduce(
+    (sum, player) =>
+      sum +
+      (player.abilities.find((ability) => ability.gameID === abilityID)?.hits ??
+        0),
+    0,
+  );
+}
+
+function percentage(value: number, total: number): number {
+  return total === 0 ? 0 : Math.round((value / total) * 10_000) / 100;
+}
+
+function selectedFightIDs(args: RankDamageTakenByAbilityArgs): number[] {
+  if (args.fightID !== undefined && args.fightIDs !== undefined) {
+    throw new Error('Provide exactly one of "fightID" or "fightIDs"');
+  }
+  const values =
+    args.fightIDs ?? (args.fightID === undefined ? [] : [args.fightID]);
+  if (values.length < 1 || values.length > MAX_ABILITY_FIGHT_SET_SIZE) {
+    throw new Error(
+      `fightIDs must contain 1 to ${MAX_ABILITY_FIGHT_SET_SIZE} fights`,
+    );
+  }
+  const unique = [...new Set(values)];
+  if (
+    unique.some(
+      (fightID) =>
+        !Number.isSafeInteger(fightID) ||
+        !Number.isInteger(fightID) ||
+        fightID < 1,
+    )
+  ) {
+    throw new Error("fight IDs must be positive safe integers");
+  }
+  return unique;
+}
+
+function validatedFights(
+  fights: Fight[],
+  fightIDs: number[],
+  reportCode: string,
+): Fight[] {
+  const fightsByID = new Map(fights.map((fight) => [fight.id, fight]));
+  const missing = fightIDs.filter((fightID) => !fightsByID.has(fightID));
+  if (missing.length > 0) {
+    throw new Error(
+      `Fight IDs not found in report ${reportCode}: ${missing.join(", ")}`,
+    );
+  }
+  return fightIDs.map((fightID) => fightsByID.get(fightID) as Fight);
+}
+
+function compactFight(fight: Fight) {
+  return {
+    difficulty: fight.difficulty,
+    durationMs: fight.endTime - fight.startTime,
+    encounterID: fight.encounterID,
+    id: fight.id,
+    kill: fight.kill,
+    name: fight.name,
+  };
 }
 
 function abilityMatches(name: string, query: string): boolean {

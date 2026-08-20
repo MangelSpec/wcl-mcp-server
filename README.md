@@ -133,7 +133,7 @@ After editing the config, restart the MCP client. Then you should see the `wcl_*
 For normal fight analysis, prefer this bounded sequence:
 
 1. `wcl_get_fights` to refresh and resolve the exact fight or fight set.
-2. `wcl_analyze_fight_set` for multi-pull totals, frequencies, and trends, or `wcl_get_fight_overview` for one exact fight.
+2. `wcl_rank_damage_taken_by_ability` for named-ability hit counts across one or more selected fights, `wcl_analyze_fight_set` for other multi-pull totals and trends, or `wcl_get_fight_overview` for one exact fight.
 3. `wcl_get_fight_window_context` only when a narrow mechanic window needs correlated aura, cast, interrupt, damage, healing, or death events.
 
 The lower-level table and event tools remain available as focused escape hatches.

@@ -6,6 +6,8 @@ export interface GetFightContextArgs {
   includeCombatantInfo?: boolean;
   refresh?: boolean;
   reportCode: string;
+  /** Internal caller cancellation; not exposed by the MCP tool schema. */
+  signal?: AbortSignal;
 }
 
 const QUERY = /* GraphQL */ `
@@ -103,7 +105,11 @@ export async function getFightContext(args: GetFightContextArgs) {
     },
     operation: "context",
     ...(args.refresh === undefined ? {} : { refresh: args.refresh }),
-    loader: async (signal, observeUpstream) => {
+    ...(args.signal === undefined ? {} : { signal: args.signal }),
+    loader: async (cacheSignal, observeUpstream) => {
+      const signal = args.signal
+        ? AbortSignal.any([cacheSignal, args.signal])
+        : cacheSignal;
       const data = await executeAndUnwrap<QueryResult>(
         QUERY,
         {

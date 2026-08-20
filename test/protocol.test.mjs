@@ -46,6 +46,17 @@ for (const mode of ["auto", "legacy"]) {
       assert.equal(fightSet?.inputSchema.properties.views.maxItems, 4);
       const rawGraphql = tools.find((tool) => tool.name === "wcl_graphql");
       assert.equal(rawGraphql?.annotations, undefined);
+      const abilityRanking = tools.find(
+        (tool) => tool.name === "wcl_rank_damage_taken_by_ability",
+      );
+      assert.equal(
+        abilityRanking?.inputSchema.properties.fightIDs.maxItems,
+        20,
+      );
+      assert.equal(
+        abilityRanking?.inputSchema.required.includes("fightID"),
+        false,
+      );
       for (const tool of tools.filter((tool) => tool.name !== "wcl_graphql")) {
         assert.deepEqual(
           tool.annotations,
@@ -85,6 +96,32 @@ test("returns structured errors without dropping legacy text", async () => {
       error: 'Argument "reportCode" must be a non-empty string',
     });
     assert.match(result.content[0]?.text ?? "", /^Error:/);
+  } finally {
+    await client.close();
+  }
+});
+
+test("requires exactly one single- or multi-fight ability-ranking scope", async () => {
+  const client = await connect("auto");
+  try {
+    for (const argumentsValue of [
+      { abilityNames: ["Test Quill"], reportCode: "R" },
+      {
+        abilityNames: ["Test Quill"],
+        fightID: 1,
+        fightIDs: [1, 2],
+        reportCode: "R",
+      },
+    ]) {
+      const result = await client.callTool({
+        arguments: argumentsValue,
+        name: "wcl_rank_damage_taken_by_ability",
+      });
+      assert.equal(result.isError, true);
+      assert.deepEqual(result.structuredContent, {
+        error: 'Provide exactly one of "fightID" or "fightIDs"',
+      });
+    }
   } finally {
     await client.close();
   }

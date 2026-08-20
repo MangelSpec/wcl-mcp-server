@@ -54,7 +54,10 @@ import {
   WINDOW_EVENT_TYPES,
 } from "./tools/getFightWindowContext.js";
 import { getPlayerFightSummary } from "./tools/getPlayerFightSummary.js";
-import { rankDamageTakenByAbility } from "./tools/rankDamageTakenByAbility.js";
+import {
+  MAX_ABILITY_FIGHT_SET_SIZE,
+  rankDamageTakenByAbility,
+} from "./tools/rankDamageTakenByAbility.js";
 import {
   analyzeFightSet,
   MAX_FIGHT_SET_ROWS,
@@ -460,12 +463,23 @@ const TOOL_DEFINITIONS: Tool[] = [
   {
     name: "wcl_rank_damage_taken_by_ability",
     description:
-      "Rank fight-roster players by total damage taken from one or more named abilities. Use for questions such as who soaked or was hit most by Light Quill, Void Quill, or any other specific mechanic. Returns compact combined player totals plus deterministic per-ability rankings and metric leaders without exposing the multi-megabyte raw damage table. Shared fragments such as 'Quills' match singular Light Quill and Void Quill names.",
+      "Rank players by total damage taken from one or more named abilities across one fight or a bounded explicit fight set. Use for questions such as who soaked or was hit most by Light Quill, Void Quill, or any other specific mechanic, including all-attempt or all-wipe hit totals. Returns deterministic hit counts, hit-share percentages when evidence is complete, damage totals, per-ability rankings, and completeness metadata without exposing raw events. Shared fragments such as 'Quills' match singular Light Quill and Void Quill names.",
     inputSchema: {
       type: "object",
       properties: {
         reportCode: { type: "string" },
-        fightID: { type: "number" },
+        fightID: {
+          type: "number",
+          description: "One exact fight ID. Mutually exclusive with fightIDs.",
+        },
+        fightIDs: {
+          type: "array",
+          items: { type: "number" },
+          minItems: 1,
+          maxItems: MAX_ABILITY_FIGHT_SET_SIZE,
+          description:
+            "Exact fight IDs selected from wcl_get_fights. Mutually exclusive with fightID.",
+        },
         abilityNames: {
           type: "array",
           items: { type: "string" },
@@ -487,7 +501,7 @@ const TOOL_DEFINITIONS: Tool[] = [
             "Refresh context and event primitives used by this analysis.",
         },
       },
-      required: ["reportCode", "fightID", "abilityNames"],
+      required: ["reportCode", "abilityNames"],
       additionalProperties: false,
     },
   },
@@ -566,15 +580,15 @@ function createServer() {
     tools: TOOLS,
   }));
 
-  server.setRequestHandler("tools/call", (request) =>
-    withEvidenceTelemetry(() => handleToolCall(request)),
+  server.setRequestHandler("tools/call", (request, context) =>
+    withEvidenceTelemetry(() => handleToolCall(request, context.mcpReq.signal)),
   );
   server.onclose = shutdownEvidenceCache;
 
   return server;
 }
 
-async function handleToolCall(request: CallToolRequest) {
+async function handleToolCall(request: CallToolRequest, signal?: AbortSignal) {
   const { name, arguments: rawArgs } = request.params;
   const args = (rawArgs ?? {}) as Record<string, unknown>;
 
@@ -789,16 +803,26 @@ async function handleToolCall(request: CallToolRequest) {
 
       case "wcl_rank_damage_taken_by_ability": {
         const reportCode = requireString(args, "reportCode");
-        const fightID = requireNumber(args, "fightID");
+        const fightID = optionalNumber(args, "fightID");
+        const fightIDs = optionalNumberArray(
+          args,
+          "fightIDs",
+          MAX_ABILITY_FIGHT_SET_SIZE,
+        );
+        if ((fightID === undefined) === (fightIDs === undefined)) {
+          throw new Error('Provide exactly one of "fightID" or "fightIDs"');
+        }
         const abilityNames = requireStringArray(args, "abilityNames", 10);
         const includeNonPlayers = optionalBoolean(args, "includeNonPlayers");
         const refresh = optionalBoolean(args, "refresh");
         const data = await rankDamageTakenByAbility({
           reportCode,
-          fightID,
           abilityNames,
+          ...(fightID === undefined ? {} : { fightID }),
+          ...(fightIDs === undefined ? {} : { fightIDs }),
           ...(includeNonPlayers === undefined ? {} : { includeNonPlayers }),
           ...(refresh === undefined ? {} : { refresh }),
+          ...(signal === undefined ? {} : { signal }),
         });
         return ok(data);
       }
@@ -899,6 +923,15 @@ function requireNumberArray(
     }
     return entry;
   });
+}
+
+function optionalNumberArray(
+  args: Record<string, unknown>,
+  key: string,
+  maxItems: number,
+): number[] | undefined {
+  if (args[key] === undefined) return undefined;
+  return requireNumberArray(args, key, maxItems);
 }
 
 function optionalBoolean(
