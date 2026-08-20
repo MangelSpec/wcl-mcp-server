@@ -63,8 +63,10 @@ interface LoadedValue {
 class EvidenceLoadError extends Error {
   constructor(
     readonly original: unknown,
-    readonly decodedBytes: number,
-    readonly upstreamDurationMs: number,
+    readonly metrics?: {
+      decodedBytes: number;
+      upstreamDurationMs: number;
+    },
   ) {
     super(original instanceof Error ? original.message : String(original), {
       cause: original,
@@ -124,7 +126,7 @@ export class EvidenceCache {
 
   async load<T>(options: LoadEvidenceOptions<T>): Promise<T> {
     if (this.#shutdown) {
-      return this.#loadUncached(options, "bypass");
+      return Promise.reject(abortError());
     }
 
     const key = canonicalJson(options.key);
@@ -313,7 +315,7 @@ export class EvidenceCache {
       });
       return cloneLoaded<T>(loaded);
     } catch (error) {
-      const failure = loadFailureMetrics(error);
+      const failure = loadFailureMetrics(error)?.metrics;
       this.#emit({
         cache: "evidence",
         ...(failure === undefined
@@ -336,11 +338,16 @@ export class EvidenceCache {
   ): Promise<LoadedValue> {
     let decodedBytes = 0;
     let upstreamDurationMs = 0;
+    let observedUpstream = false;
     try {
-      const value = await loader(controller.signal, (metrics) => {
-        decodedBytes += metrics.decodedBytes;
-        upstreamDurationMs += metrics.durationMs;
-      });
+      const value = await waitForCaller(
+        loader(controller.signal, (metrics) => {
+          observedUpstream = true;
+          decodedBytes += metrics.decodedBytes;
+          upstreamDurationMs += metrics.durationMs;
+        }),
+        controller.signal,
+      );
       return {
         decodedBytes,
         evicted: false,
@@ -349,7 +356,10 @@ export class EvidenceCache {
         value,
       };
     } catch (error) {
-      throw new EvidenceLoadError(error, decodedBytes, upstreamDurationMs);
+      throw new EvidenceLoadError(
+        error,
+        observedUpstream ? { decodedBytes, upstreamDurationMs } : undefined,
+      );
     }
   }
 
@@ -586,11 +596,11 @@ function claimLoadedMetrics(
 function claimFailureMetrics(
   inflight: InflightEntry,
   error: unknown,
-): EvidenceLoadError | undefined {
+): { decodedBytes: number; upstreamDurationMs: number } | undefined {
   const failure = loadFailureMetrics(error);
-  if (!failure || inflight.metricsClaimed) return undefined;
+  if (!failure?.metrics || inflight.metricsClaimed) return undefined;
   inflight.metricsClaimed = true;
-  return failure;
+  return failure.metrics;
 }
 
 function unwrapLoadError(error: unknown): unknown {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { test } from "node:test";
 
 import {
@@ -11,6 +12,7 @@ import {
   parseEvidenceCacheLimits,
   withEvidenceTelemetry,
 } from "../dist/evidenceCache.js";
+import { installEvidenceCacheLifecycle } from "../dist/lifecycle.js";
 import { ok } from "../dist/toolResult.js";
 
 function deferred() {
@@ -401,6 +403,61 @@ test("shutdown aborts owned loads, prevents insertion, and clears retained bytes
     inflight: 0,
     shutdown: true,
   });
+});
+
+test("shutdown rejects in-flight and later loads without running later loaders", async () => {
+  const subject = cache();
+  const pending = deferred();
+  let calls = 0;
+  const inFlight = subject.load({
+    key: { id: "in-flight" },
+    operation: "events",
+    loader: async () => {
+      calls++;
+      return pending.promise;
+    },
+  });
+
+  subject.shutdown();
+  await assert.rejects(inFlight, { name: "AbortError" });
+  await assert.rejects(
+    subject.load({
+      key: { id: "after-shutdown" },
+      operation: "events",
+      loader: async () => {
+        calls++;
+        return { ok: true };
+      },
+    }),
+    { name: "AbortError" },
+  );
+  assert.equal(calls, 1);
+  pending.resolve({ ok: true });
+});
+
+test("lifecycle hooks shut down on signals and normal exit without using process", () => {
+  class FakeProcess extends EventEmitter {
+    exitCode = null;
+
+    exit(code) {
+      this.exitCode = code;
+    }
+  }
+
+  for (const [event, exitCode] of [
+    ["SIGINT", 130],
+    ["SIGTERM", 143],
+    ["beforeExit", null],
+    ["exit", null],
+  ]) {
+    const target = new FakeProcess();
+    let shutdowns = 0;
+    const remove = installEvidenceCacheLifecycle(target, () => shutdowns++);
+    target.emit(event, 0);
+    assert.equal(shutdowns, 1);
+    assert.equal(target.exitCode, exitCode);
+    remove();
+  }
 });
 
 test("errors, unsupported results, and oversize results are never cached", async () => {

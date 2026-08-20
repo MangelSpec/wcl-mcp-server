@@ -122,6 +122,12 @@ export async function executeGraphQL<T = unknown>(
       body: JSON.stringify({ query, variables: variables ?? {} }),
       signal: controller.signal,
     });
+    const responseText = await readResponseText(res, controller.signal);
+    options.onResponse?.({
+      decodedBytes: Buffer.byteLength(responseText),
+      durationMs: Math.max(0, performance.now() - requestStartedAt),
+    });
+
     // 401 — token rejected. Invalidate and retry once. In user mode the retry
     // also forces a refresh-token round trip, which is what recovers a token that
     // WCL expired earlier than its stated `expires_in`.
@@ -160,7 +166,6 @@ export async function executeGraphQL<T = unknown>(
       );
     }
 
-    const responseText = await readResponseText(res, controller.signal);
     if (!res.ok) {
       throw new Error(
         `WCL GraphQL HTTP error: ${res.status} ${res.statusText}${
@@ -170,10 +175,6 @@ export async function executeGraphQL<T = unknown>(
     }
 
     const body = JSON.parse(responseText) as GraphQLResponse<T>;
-    options.onResponse?.({
-      decodedBytes: Buffer.byteLength(responseText),
-      durationMs: Math.max(0, performance.now() - requestStartedAt),
-    });
 
     // Opportunistically scrape rateLimitData from any response shape that happens
     // to include it at the root of `data`. Structured tools append it to their

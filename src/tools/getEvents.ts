@@ -155,7 +155,11 @@ export async function getEvents(args: GetEventsArgs): Promise<GetEventsResult> {
     throw new Error(`maxPages must be >= 1 (got ${maxPages})`);
   }
 
-  const bounds = await resolveFightBounds(args.reportCode, args.fightID);
+  const bounds = await resolveFightBounds(
+    args.reportCode,
+    args.fightID,
+    args.refresh === undefined ? {} : { refresh: args.refresh },
+  );
   const fightStart = bounds.startTime;
   const fightEnd = bounds.endTime;
 

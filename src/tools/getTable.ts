@@ -121,6 +121,7 @@ export async function getTable(args: GetTableArgs): Promise<GetTableResult> {
   const { startTime, endTime } = await resolveFightBounds(
     args.reportCode,
     args.fightID,
+    args.refresh === undefined ? {} : { refresh: args.refresh },
   );
 
   return loadEvidence({

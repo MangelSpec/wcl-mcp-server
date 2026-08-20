@@ -179,8 +179,9 @@ export function shouldUseReportCache(
 export async function resolveFightBounds(
   reportCode: string,
   fightID: number,
+  options: { refresh?: boolean } = {},
 ): Promise<{ startTime: number; endTime: number }> {
-  const { fights } = await getCachedReport(reportCode);
+  const { fights } = await getCachedReport(reportCode, options);
   const fight = fights.find((f) => f.id === fightID);
   if (!fight) {
     throw new Error(

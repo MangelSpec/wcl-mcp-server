@@ -22,6 +22,9 @@ const originalFetch = globalThis.fetch;
 function installMockWcl() {
   const calls = new Map();
   let contextError = null;
+  let contextHttpFailure = null;
+  let reportEndTime = 60_000;
+  const requests = [];
   process.env.WCL_CLIENT_ID = "test-client";
   process.env.WCL_CLIENT_SECRET = "test-secret";
   process.env.WCL_TOKEN_FILE = path.resolve("test", "missing-token.json");
@@ -43,15 +46,25 @@ function installMockWcl() {
     const variables = body.variables ?? {};
     const operation = classify(query);
     calls.set(operation, (calls.get(operation) ?? 0) + 1);
+    requests.push({ operation, variables });
 
+    if (operation === "context" && contextHttpFailure) {
+      return new Response(contextHttpFailure.body, {
+        status: contextHttpFailure.status,
+        statusText: contextHttpFailure.statusText,
+      });
+    }
     if (operation === "context" && contextError) {
       return Response.json(contextError);
     }
-    return Response.json({ data: responseData(operation, variables) });
+    return Response.json({
+      data: responseData(operation, variables, reportEndTime),
+    });
   };
 
   return {
     calls,
+    requests,
     restore() {
       globalThis.fetch = originalFetch;
       invalidateToken();
@@ -60,6 +73,12 @@ function installMockWcl() {
     },
     setContextError(value) {
       contextError = value;
+    },
+    setContextHttpFailure(value) {
+      contextHttpFailure = value;
+    },
+    setReportEndTime(value) {
+      reportEndTime = value;
     },
   };
 }
@@ -74,7 +93,7 @@ function classify(query) {
   return "raw";
 }
 
-function responseData(operation, variables) {
+function responseData(operation, variables, reportEndTime = 60_000) {
   const rateLimitData = {
     limitPerHour: 3600,
     pointsResetIn: 100,
@@ -88,8 +107,11 @@ function responseData(operation, variables) {
           code: variables.code,
           title: "Test report",
           startTime: 0,
-          endTime: 60_000,
-          fights: [fight(), fight(2, 80_000, 120_000)],
+          endTime: reportEndTime,
+          fights: [
+            fight(1, 10_000, reportEndTime),
+            fight(2, 80_000, 120_000),
+          ],
         },
       },
     };
@@ -287,6 +309,53 @@ test("refresh bypasses completed evidence and GraphQL errors including partial d
   }
 });
 
+test("explicit primitive and composite refreshes use refreshed live fight bounds", async () => {
+  const mock = installMockWcl();
+  try {
+    const initial = await getTable({
+      fightID: 1,
+      reportCode: "R",
+      view: "damage-done",
+    });
+    assert.equal(initial.endTime, 60_000);
+
+    mock.setReportEndTime(120_000);
+    const table = await getTable({
+      fightID: 1,
+      refresh: true,
+      reportCode: "R",
+      view: "damage-done",
+    });
+    const events = await getEvents({
+      dataType: "Casts",
+      fightID: 1,
+      refresh: true,
+      reportCode: "R",
+    });
+    await getFightOverview({ fightID: 1, refresh: true, reportCode: "R" });
+    await rankDamageTakenByAbility({
+      abilityNames: ["Test Quill"],
+      fightID: 1,
+      refresh: true,
+      reportCode: "R",
+    });
+
+    assert.equal(table.endTime, 120_000);
+    assert.equal(events.fightEndTime, 120_000);
+    const refreshedRequests = mock.requests.filter(
+      ({ operation }) => operation === "table" || operation === "events",
+    );
+    assert.equal(refreshedRequests[0].variables.endTime, 60_000);
+    assert.ok(
+      refreshedRequests
+        .slice(1)
+        .every(({ variables }) => variables.endTime === 120_000),
+    );
+  } finally {
+    mock.restore();
+  }
+});
+
 test("GraphQL failures report decoded bytes and duration once for the actual load", async () => {
   const mock = installMockWcl();
   const envelope = { errors: [{ message: "failed" }] };
@@ -309,6 +378,30 @@ test("GraphQL failures report decoded bytes and duration once for the actual loa
     );
     assert.ok(Number.isFinite(events[0].durationMs));
     assert.ok(events[0].durationMs >= 0);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("non-empty HTTP failures preserve decoded bytes and duration in telemetry", async () => {
+  const mock = installMockWcl();
+  const body = "upstream exploded";
+  try {
+    mock.setContextHttpFailure({ body, status: 500, statusText: "Failure" });
+    const result = await withEvidenceTelemetry(async () => {
+      try {
+        await getFightContext({ fightID: 1, reportCode: "R" });
+        throw new Error("expected HTTP failure");
+      } catch (error) {
+        return err(error.message);
+      }
+    });
+    const events = result._meta?.["raidlens/cache"]?.events;
+    assert.equal(events.length, 1);
+    assert.equal(events[0].outcome, "load_error");
+    assert.equal(events[0].decodedBytes, Buffer.byteLength(body));
+    assert.ok(Number.isFinite(events[0].durationMs));
+    assert.ok(events[0].durationMs > 0);
   } finally {
     mock.restore();
   }

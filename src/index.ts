@@ -32,7 +32,11 @@ import {
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 
 import { WclRateLimitError } from "./client.js";
-import { withEvidenceTelemetry } from "./evidenceCache.js";
+import {
+  shutdownEvidenceCache,
+  withEvidenceTelemetry,
+} from "./evidenceCache.js";
+import { installEvidenceCacheLifecycle } from "./lifecycle.js";
 import { getRateLimit } from "./tools/getRateLimit.js";
 import { getFights } from "./tools/getFights.js";
 import { getPlayerInfo } from "./tools/getPlayerInfo.js";
@@ -565,6 +569,7 @@ function createServer() {
   server.setRequestHandler("tools/call", (request) =>
     withEvidenceTelemetry(() => handleToolCall(request)),
   );
+  server.onclose = shutdownEvidenceCache;
 
   return server;
 }
@@ -983,6 +988,7 @@ function optionalEnum<T extends string>(
 }
 
 function main() {
+  installEvidenceCacheLifecycle();
   serveStdio(createServer, {
     legacy: "serve",
     onerror: (error) => console.error("MCP server error:", error),
